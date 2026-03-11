@@ -18,7 +18,7 @@ export { init } from "./init.js";
 export type { EcoAPIHandle } from "./init.js";
 
 // Core classes (for advanced / direct usage)
-export { ProviderRegistry } from "./core/provider-registry.js";
+export { ProviderRegistry, BUILTIN_PROVIDERS } from "./core/provider-registry.js";
 export { install, uninstall, isInstalled } from "./core/interceptor.js";
 export type { EventCallback } from "./core/interceptor.js";
 export { Aggregator } from "./core/aggregator.js";

@@ -11,7 +11,7 @@ Your app
   └─ fetch("https://api.openai.com/v1/chat/completions", ...)
        │
        ▼
-  FetchInterceptor          ← patches globalThis.fetch
+  Interceptor               ← patches globalThis.fetch, http.request, https.request
        │  RawEvent { host, path, method, statusCode, latencyMs, ... }
        ▼
   ProviderRegistry          ← matches host/path → provider + endpointCategory + cost
@@ -109,6 +109,17 @@ init({
     },
   ],
 });
+```
+
+### Cleanup / teardown
+
+`init()` returns a handle with a `dispose()` method that stops the interceptor, cancels the flush timer, and closes the transport connection. Useful in tests or when you want to reinitialize with different config.
+
+```ts
+const ecoapi = init({ apiKey: process.env.ECOAPI_KEY });
+
+// Later — e.g. in a test afterAll() or process shutdown handler:
+ecoapi.dispose();
 ```
 
 ### Disabling in tests
