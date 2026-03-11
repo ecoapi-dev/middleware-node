@@ -160,7 +160,7 @@ export class Transport {
 
     try {
       if (this._cfg.mode === "cloud") {
-        const url = `${this._cfg.baseUrl}/v1/windows`;
+        const url = `${this._cfg.baseUrl}/projects/${this._cfg.projectId}/telemetry`;
         await postCloud(url, body, this._cfg.apiKey, this._cfg.maxRetries);
       } else {
         // Local WebSocket
