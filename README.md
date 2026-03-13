@@ -192,6 +192,39 @@ import type {
 
 See [src/core/types.ts](src/core/types.ts) for full type documentation.
 
+## Testing
+
+Run the full test suite (143 tests across 8 files):
+
+```bash
+npm test
+```
+
+Watch mode during development:
+
+```bash
+npm run test:watch
+```
+
+TypeScript type-check only (does not run tests):
+
+```bash
+npm run lint
+```
+
+### Test coverage
+
+| File | Tests | What is covered |
+|---|---|---|
+| `tests/provider-registry.test.ts` | 41 | All 21 built-in provider rules, wildcard host matching, Twilio path refinement, edge cases (empty string, explicit port, query params), custom provider priority, `BUILTIN_PROVIDERS` array ordering |
+| `tests/interceptor.test.ts` | 28 | Lifecycle (install/uninstall/isInstalled), fetch/http.request/http.get capture, query stripping, URL/Request object inputs, safety wrappers (throwing callback), `getRawFetch` bypass, double-count guard |
+| `tests/aggregator.test.ts` | 28 | Flush/reset, event grouping, p50/p95 percentile edge cases, null provider/endpoint fallbacks, window timestamps, metadata forwarding, size/bucketCount tracking |
+| `tests/transport.test.ts` | 15 | Cloud mode POST (URL path, auth header, 4xx no-retry, 5xx retry + recovery, `onError`), WebSocket mode (send, queue-and-drain, dispose closes connection) |
+| `tests/init.test.ts` | 16 | Interceptor install/dispose, `enabled: false`, double-init, event enrichment, unknown provider grouping, exclude patterns, auto-exclude transport URL, flush interval, early batch flush, dispose stops capture |
+| `tests/express.test.ts` | 6 | Middleware arity, `next()` called without error, config forwarding |
+| `tests/fastify.test.ts` | 4 | `done()` called, config forwarding |
+| `tests/scaffold.test.ts` | 5 | Public export smoke tests |
+
 ## Implementation status
 
 | Module | Status |
