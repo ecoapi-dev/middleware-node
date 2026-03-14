@@ -240,4 +240,4 @@ npm run lint
 
 ## License
 
-MIT © 2026 Andres Lopez, Aslan Wang, Donggyu Yoon
+Licensed under the [GNU Affero General Public License v3.0](LICENSE) © 2026 Andres Lopez, Aslan Wang, Donggyu Yoon.
