@@ -72,6 +72,31 @@ export const BUILTIN_PROVIDERS: ProviderDef[] = [
 
   // ── Google Cloud ──────────────────────────────────────────────────────────
   { hostPattern: "*.googleapis.com", provider: "gcp", costPerRequestCents: 0 },
+
+  // ── GitHub ────────────────────────────────────────────────────────────────
+  { hostPattern: "api.github.com", pathPrefix: "/repos",  provider: "github", endpointCategory: "repos",   costPerRequestCents: 0 },
+  { hostPattern: "api.github.com", pathPrefix: "/users",  provider: "github", endpointCategory: "users",   costPerRequestCents: 0 },
+  { hostPattern: "api.github.com", pathPrefix: "/search", provider: "github", endpointCategory: "search",  costPerRequestCents: 0 },
+  { hostPattern: "api.github.com",                         provider: "github",                              costPerRequestCents: 0 },
+
+  // ── CoinGecko ─────────────────────────────────────────────────────────────
+  { hostPattern: "api.coingecko.com", pathPrefix: "/api/v3/simple/price", provider: "coingecko", endpointCategory: "simple_price", costPerRequestCents: 0 },
+  { hostPattern: "api.coingecko.com", pathPrefix: "/api/v3/coins",        provider: "coingecko", endpointCategory: "coins",         costPerRequestCents: 0 },
+  { hostPattern: "api.coingecko.com",                                      provider: "coingecko",                                    costPerRequestCents: 0 },
+
+  // ── Hacker News ───────────────────────────────────────────────────────────
+  { hostPattern: "hacker-news.firebaseio.com", pathPrefix: "/v0/topstories", provider: "hackernews", endpointCategory: "topstories", costPerRequestCents: 0 },
+  { hostPattern: "hacker-news.firebaseio.com", pathPrefix: "/v0/item",       provider: "hackernews", endpointCategory: "item",       costPerRequestCents: 0 },
+  { hostPattern: "hacker-news.firebaseio.com",                                provider: "hackernews",                                 costPerRequestCents: 0 },
+
+  // ── wttr.in (weather) ─────────────────────────────────────────────────────
+  { hostPattern: "wttr.in", provider: "wttr", endpointCategory: "weather", costPerRequestCents: 0 },
+
+  // ── ZenQuotes ─────────────────────────────────────────────────────────────
+  { hostPattern: "zenquotes.io", provider: "zenquotes", endpointCategory: "random_quote", costPerRequestCents: 0 },
+
+  // ── ip-api (geolocation) ──────────────────────────────────────────────────
+  { hostPattern: "ip-api.com", provider: "ip-api", endpointCategory: "geolocation", costPerRequestCents: 0 },
 ];
 
 // ---------------------------------------------------------------------------
