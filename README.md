@@ -1,10 +1,10 @@
-# @ecoapi/node
+# @recost/node
 
-Node.js SDK for [EcoAPI](https://ecoapi.dev) — automatically tracks outbound HTTP API calls from your application and reports cost, latency, and usage patterns to the EcoAPI dashboard or your local VS Code extension.
+Node.js SDK for [ReCost](https://recost.dev) — automatically tracks outbound HTTP API calls from your application and reports cost, latency, and usage patterns to the ReCost dashboard or your local VS Code extension.
 
 ## How it works
 
-The SDK monkey-patches `fetch`, `http.request`, and `https.request` to intercept outbound requests at runtime. It captures metadata only (URL, method, status, latency, byte sizes — never headers or bodies), matches each request against a built-in provider registry, aggregates events into time-windowed summaries, and ships those summaries either to the EcoAPI cloud API or to the EcoAPI VS Code extension running locally.
+The SDK monkey-patches `fetch`, `http.request`, and `https.request` to intercept outbound requests at runtime. It captures metadata only (URL, method, status, latency, byte sizes — never headers or bodies), matches each request against a built-in provider registry, aggregates events into time-windowed summaries, and ships those summaries either to the ReCost cloud API or to the ReCost VS Code extension running locally.
 
 ```
 Your app
@@ -22,7 +22,7 @@ Your app
        ▼
   Transport
     ├─ local mode  → WebSocket  → VS Code extension (port 9847)
-    └─ cloud mode  → HTTPS POST → api.ecoapi.dev
+    └─ cloud mode  → HTTPS POST → api.recost.dev
 ```
 
 ## Installation
@@ -35,7 +35,7 @@ npm install @ecoapi/node
 
 ### Local mode (VS Code extension)
 
-No API key needed. Telemetry goes to the EcoAPI VS Code extension over localhost.
+No API key needed. Telemetry goes to the ReCost VS Code extension over localhost.
 
 ```ts
 import { init } from "@ecoapi/node";
@@ -81,8 +81,8 @@ All fields are optional.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `apiKey` | `string` | — | EcoAPI API key. If omitted, runs in local mode. |
-| `projectId` | `string` | — | EcoAPI project ID. Required in cloud mode. |
+| `apiKey` | `string` | — | ReCost API key. If omitted, runs in local mode. |
+| `projectId` | `string` | — | ReCost project ID. Required in cloud mode. |
 | `environment` | `string` | `"development"` | Environment tag attached to all telemetry. |
 | `flushIntervalMs` | `number` | `30000` | Milliseconds between automatic flushes. |
 | `maxBatchSize` | `number` | `100` | Early-flush threshold (number of events). |
@@ -91,7 +91,7 @@ All fields are optional.
 | `enabled` | `boolean` | `true` | Master kill switch. Set `false` to disable in tests. |
 | `customProviders` | `ProviderDef[]` | `[]` | Extra provider rules merged with higher priority than built-ins. |
 | `excludePatterns` | `string[]` | `[]` | URL substrings that cause a request to be silently dropped. |
-| `baseUrl` | `string` | `"https://api.ecoapi.dev"` | Override for self-hosted deployments. |
+| `baseUrl` | `string` | `"https://api.recost.dev"` | Override for self-hosted deployments. |
 | `maxRetries` | `number` | `3` | Retry attempts for failed cloud flushes. |
 | `onError` | `(err: Error) => void` | — | Called on internal SDK errors. |
 
@@ -116,10 +116,10 @@ init({
 `init()` returns a handle with a `dispose()` method that stops the interceptor, cancels the flush timer, and closes the transport connection. Useful in tests or when you want to reinitialize with different config.
 
 ```ts
-const ecoapi = init({ apiKey: process.env.ECOAPI_KEY });
+const recost = init({ apiKey: process.env.ECOAPI_KEY });
 
 // Later — e.g. in a test afterAll() or process shutdown handler:
-ecoapi.dispose();
+recost.dispose();
 ```
 
 ### Disabling in tests
@@ -240,12 +240,12 @@ npm run lint
 
 ## API reference
 
-All requests go to `https://api.ecoapi.dev`. No authentication is required for project management endpoints.
+All requests go to `https://api.recost.dev`. No authentication is required for project management endpoints.
 
 ### Create a project
 
 ```bash
-curl -s -X POST https://api.ecoapi.dev/projects \
+curl -s -X POST https://api.recost.dev/projects \
   -H "Content-Type: application/json" \
   -d '{"name": "my-app", "description": "optional"}' | jq .
 ```
@@ -255,25 +255,25 @@ Copy the `id` from the response — that's your `projectId`.
 ### List your projects
 
 ```bash
-curl -s https://api.ecoapi.dev/projects | jq .
+curl -s https://api.recost.dev/projects | jq .
 ```
 
 ### View analytics for a project
 
 ```bash
-curl -s "https://api.ecoapi.dev/projects/{projectId}/analytics" | jq .
+curl -s "https://api.recost.dev/projects/{projectId}/analytics" | jq .
 ```
 
 ### View cost breakdown by provider
 
 ```bash
-curl -s "https://api.ecoapi.dev/projects/{projectId}/cost/by-provider" | jq .
+curl -s "https://api.recost.dev/projects/{projectId}/cost/by-provider" | jq .
 ```
 
 ### Send telemetry manually (what the SDK does on flush)
 
 ```bash
-curl -s -X POST https://api.ecoapi.dev/projects/{projectId}/telemetry \
+curl -s -X POST https://api.recost.dev/projects/{projectId}/telemetry \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer {apiKey}" \
   -d @payload.json | jq .
