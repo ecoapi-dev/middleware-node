@@ -49,7 +49,7 @@ async function postCloud(
   body: string,
   apiKey: string,
   maxRetries: number,
-): Promise<void> {
+): Promise<{ ok: boolean; status: number }> {
   const rawFetch = getRawFetch();
   let lastError: unknown;
 
@@ -64,10 +64,10 @@ async function postCloud(
         body,
       });
 
-      if (res.ok) return;
+      if (res.ok) return { ok: true, status: res.status };
 
-      // 4xx errors are not retriable — drop the payload
-      if (res.status >= 400 && res.status < 500) return;
+      // 4xx errors are not retriable — drop the payload, but return status for logging
+      if (res.status >= 400 && res.status < 500) return { ok: false, status: res.status };
 
       lastError = new Error(`HTTP ${res.status}`);
     } catch (err) {
@@ -161,7 +161,19 @@ export class Transport {
     try {
       if (this._cfg.mode === "cloud") {
         const url = `${this._cfg.baseUrl}/projects/${this._cfg.projectId}/telemetry`;
-        await postCloud(url, body, this._cfg.apiKey, this._cfg.maxRetries);
+        const result = await postCloud(url, body, this._cfg.apiKey, this._cfg.maxRetries);
+        if (!result.ok) {
+          const msg = result.status === 401
+            ? `[recost] HTTP 401 — API key is invalid or has been revoked. Check RECOST_API_KEY.`
+            : result.status === 403
+              ? `[recost] HTTP 403 — API key does not have access to this project. Check RECOST_PROJECT_ID.`
+              : result.status === 404
+                ? `[recost] HTTP 404 — Project not found. Check RECOST_PROJECT_ID.`
+                : `[recost] HTTP ${result.status} — telemetry payload rejected`;
+          const err = new Error(msg);
+          if (this._cfg.onError) this._cfg.onError(err);
+          else if (this._cfg.debug) console.error(msg);
+        }
       } else {
         // Local WebSocket
         if (this._ws?.readyState === WebSocket.OPEN) {
