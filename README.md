@@ -267,4 +267,4 @@ curl -s "https://api.recost.dev/projects/{projectId}/analytics?from=2026-01-01T0
 
 ## License
 
-Licensed under the [GNU Affero General Public License v3.0](LICENSE) © 2026 Andres Lopez, Aslan Wang, Donggyu Yoon.
+Licensed under the [Business Source License 1.1](./LICENSE). You may use this software in production, but you may not offer it as a commercial API cost tracking or monitoring service. The source code will convert to Apache 2.0 on April 1, 2030.
