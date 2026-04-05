@@ -1,5 +1,5 @@
 /**
- * Fastify adapter for @recost/node.
+ * Fastify adapter for @recost-dev/node.
  * Registers ReCost telemetry as a Fastify plugin.
  * Fastify itself is a peer dependency — types are kept loose to avoid requiring
  * @types/fastify in the SDK's own package.json.

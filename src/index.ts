@@ -1,5 +1,5 @@
 /**
- * @recost/node — public API surface.
+ * @recost-dev/node — public API surface.
  * Re-export everything consumers need. Only add exports here when something is ready.
  */
 

@@ -1,5 +1,5 @@
 /**
- * Core type definitions for @recost/node.
+ * Core type definitions for @recost-dev/node.
  * Every other module imports from here. No runtime code, no external imports.
  */
 

@@ -1,4 +1,4 @@
-# @recost/node
+# @recost-dev/node
 
 Node.js SDK for [ReCost](https://recost.dev) — automatically tracks outbound HTTP API calls from your application and reports cost, latency, and usage patterns to the ReCost dashboard or your local VS Code extension.
 
@@ -38,7 +38,7 @@ npm install @recost-dev/node
 No API key needed. Telemetry goes to the ReCost VS Code extension over localhost.
 
 ```ts
-import { init } from "@recost/node";
+import { init } from "@recost-dev/node";
 
 init(); // all defaults — local mode on port 9847
 ```
@@ -46,7 +46,7 @@ init(); // all defaults — local mode on port 9847
 ### Cloud mode
 
 ```ts
-import { init } from "@recost/node";
+import { init } from "@recost-dev/node";
 
 init({
   apiKey: process.env.RECOST_API_KEY,
@@ -59,7 +59,7 @@ init({
 
 ```ts
 import express from "express";
-import { createExpressMiddleware } from "@recost/node";
+import { createExpressMiddleware } from "@recost-dev/node";
 
 const app = express();
 app.use(createExpressMiddleware({ apiKey: process.env.RECOST_API_KEY }));
@@ -69,7 +69,7 @@ app.use(createExpressMiddleware({ apiKey: process.env.RECOST_API_KEY }));
 
 ```ts
 import Fastify from "fastify";
-import { createFastifyPlugin } from "@recost/node";
+import { createFastifyPlugin } from "@recost-dev/node";
 
 const app = Fastify();
 await app.register(createFastifyPlugin, { apiKey: process.env.RECOST_API_KEY });
@@ -148,7 +148,7 @@ Unrecognized hosts produce a `RawEvent` with `provider: null` — they still app
 ### Using the registry directly
 
 ```ts
-import { ProviderRegistry, BUILTIN_PROVIDERS } from "@recost/node";
+import { ProviderRegistry, BUILTIN_PROVIDERS } from "@recost-dev/node";
 
 // Default registry (built-ins only)
 const registry = new ProviderRegistry();
@@ -187,7 +187,7 @@ import type {
   RecostConfig,
   ProviderDef,
   TransportMode,
-} from "@recost/node";
+} from "@recost-dev/node";
 ```
 
 See [src/core/types.ts](src/core/types.ts) for full type documentation.

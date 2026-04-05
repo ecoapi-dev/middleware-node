@@ -1,5 +1,5 @@
 /**
- * Express adapter for @recost/node.
+ * Express adapter for @recost-dev/node.
  * Calls init() with the provided config and returns a no-op middleware.
  * Express itself is a peer dependency — types are kept loose so this file
  * compiles without requiring @types/express in the SDK's own package.json.
