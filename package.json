@@ -2,7 +2,7 @@
   "name": "@recost-dev/node",
   "version": "0.1.0",
   "description": "ReCost middleware for Node.js — provider registry, interceptors, and framework adapters",
-  "license": "AGPL-3.0-only",
+  "license": "BUSL-1.1",
   "author": "recost-dev",
   "type": "module",
   "main": "dist/index.js",
