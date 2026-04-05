@@ -12,7 +12,7 @@
     "sourceMap": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "outDir": "./dist/types",
+    "outDir": "./dist",
     "rootDir": "./src"
   },
   "include": ["src"],

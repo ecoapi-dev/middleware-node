@@ -1,13 +1,13 @@
 {
-  "name": "@recost/node",
+  "name": "@recost-dev/node",
   "version": "0.1.0",
   "description": "ReCost middleware for Node.js — provider registry, interceptors, and framework adapters",
   "license": "AGPL-3.0-only",
   "author": "recost-dev",
   "type": "module",
-  "main": "./dist/cjs/index.cjs",
+  "main": "dist/index.js",
   "module": "./dist/esm/index.js",
-  "types": "./dist/types/index.d.ts",
+  "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/types/index.d.ts",
@@ -24,8 +24,17 @@
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
   },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/recost-dev/node-sdk"
+  },
+  "homepage": "https://recost.dev",
   "devDependencies": {
     "@types/node": "^25.4.0",
     "@types/ws": "^8.18.1",

@@ -28,7 +28,7 @@ Your app
 ## Installation
 
 ```bash
-npm install @recost/node
+npm install @recost-dev/node
 ```
 
 ## Quick start
