@@ -327,8 +327,8 @@ describe("custom providers", () => {
 // ---------------------------------------------------------------------------
 
 describe("BUILTIN_PROVIDERS array", () => {
-  it("has exactly 21 rules", () => {
-    expect(BUILTIN_PROVIDERS).toHaveLength(21);
+  it("has exactly 34 rules", () => {
+    expect(BUILTIN_PROVIDERS).toHaveLength(34);
   });
 
   it("all rules have a hostPattern and provider", () => {
