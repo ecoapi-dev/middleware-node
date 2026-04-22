@@ -162,7 +162,6 @@ const patchedFetch: typeof globalThis.fetch = async (input, init?) => {
 
   try {
     const response = await _originalFetch!(input, init);
-    _inFetchWrapper = false;
 
     try {
       const latencyMs = performance.now() - startTime;
@@ -175,8 +174,6 @@ const patchedFetch: typeof globalThis.fetch = async (input, init?) => {
 
     return response;
   } catch (fetchError) {
-    _inFetchWrapper = false;
-
     try {
       const latencyMs = performance.now() - startTime;
       _callback?.(buildEvent(parsed, method, 0, latencyMs, requestBytes, 0));
@@ -185,6 +182,11 @@ const patchedFetch: typeof globalThis.fetch = async (input, init?) => {
     }
 
     throw fetchError;
+  } finally {
+    // Always reset the re-entrancy guard — a throw anywhere between
+    // the `true` assignment and here would otherwise leak it permanently
+    // and silently drop every future http.request event.
+    _inFetchWrapper = false;
   }
 };
 

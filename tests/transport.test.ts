@@ -6,11 +6,11 @@
  */
 
 import http from "node:http";
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import { Transport } from "../src/core/transport.js";
 import { uninstall } from "../src/core/interceptor.js";
-import type { WindowSummary } from "../src/core/types.js";
+import type { MetricEntry, WindowSummary } from "../src/core/types.js";
 
 afterEach(() => {
   uninstall();
@@ -380,5 +380,122 @@ describe("Transport local mode", () => {
     await ws.close();
 
     expect(ws.connectionCount).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rejection signalling (422, onError, warnings, lastFlushStatus)
+// ---------------------------------------------------------------------------
+
+function makeMetric(overrides: Partial<MetricEntry> = {}): MetricEntry {
+  return {
+    provider: "openai",
+    endpoint: "chat_completions",
+    method: "POST",
+    requestCount: 1,
+    errorCount: 0,
+    totalLatencyMs: 100,
+    p50LatencyMs: 100,
+    p95LatencyMs: 100,
+    totalRequestBytes: 10,
+    totalResponseBytes: 20,
+    estimatedCostCents: 1,
+    ...overrides,
+  };
+}
+
+describe("Transport — rejection signalling", () => {
+  it("422 response fires onError with a descriptive Error", async () => {
+    const server = await startFakeHttpServer();
+    server.statusCode = 422;
+
+    const errors: Error[] = [];
+    const t = new Transport({
+      apiKey: "key",
+      baseUrl: server.baseUrl,
+      maxRetries: 0,
+      onError: (e) => errors.push(e),
+      debug: false,
+    });
+
+    const summary = makeSummary({ metrics: [makeMetric(), makeMetric({ endpoint: "b" })] });
+    await t.send(summary);
+    const status = t.lastFlushStatus;
+    t.dispose();
+    await server.close();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain("422");
+    expect(errors[0]!.message).toContain("windowSize=2");
+    expect(status?.status).toBe("error");
+    expect(status?.windowSize).toBe(2);
+  });
+
+  it("422 response logs a console.warn even when debug=false", async () => {
+    const server = await startFakeHttpServer();
+    server.statusCode = 422;
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const t = new Transport({
+        apiKey: "key",
+        baseUrl: server.baseUrl,
+        maxRetries: 0,
+        debug: false,
+      });
+      await t.send(makeSummary({ metrics: [makeMetric()] }));
+      t.dispose();
+      await server.close();
+
+      const matchingCalls = warnSpy.mock.calls.filter((args) =>
+        typeof args[0] === "string" && args[0].includes("HTTP 422"),
+      );
+      expect(matchingCalls.length).toBeGreaterThanOrEqual(1);
+      expect(matchingCalls[0]![0] as string).toContain("windowSize=1");
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("lastFlushStatus reports 'ok' on a successful cloud flush", async () => {
+    const server = await startFakeHttpServer();
+    server.statusCode = 202;
+    const t = new Transport({
+      apiKey: "key",
+      baseUrl: server.baseUrl,
+      maxRetries: 0,
+    });
+    await t.send(makeSummary({ metrics: [makeMetric()] }));
+    const status = t.lastFlushStatus;
+    t.dispose();
+    await server.close();
+
+    expect(status?.status).toBe("ok");
+    expect(status?.windowSize).toBe(1);
+    expect(typeof status?.timestamp).toBe("number");
+  });
+
+  it("summaries larger than maxBuckets are chunked and sent sequentially", async () => {
+    const server = await startFakeHttpServer();
+    server.statusCode = 202;
+    const t = new Transport({
+      apiKey: "key",
+      baseUrl: server.baseUrl,
+      maxRetries: 0,
+      maxBuckets: 3,
+    });
+
+    const metrics = Array.from({ length: 7 }, (_, i) => makeMetric({ endpoint: `ep${i}` }));
+    await t.send(makeSummary({ metrics }));
+    const status = t.lastFlushStatus;
+    t.dispose();
+    await server.close();
+
+    expect(server.requests).toHaveLength(3); // ceil(7/3)
+    const sentSizes = server.requests.map((r) => (JSON.parse(r.body) as WindowSummary).metrics.length);
+    expect(sentSizes).toEqual([3, 3, 1]);
+    // Final chunk's windowSize is reflected
+    expect(status?.windowSize).toBe(1);
+    expect(status?.status).toBe("ok");
   });
 });

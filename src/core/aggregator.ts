@@ -8,6 +8,13 @@
 
 import type { MetricEntry, RawEvent, WindowSummary } from "./types.js";
 
+/**
+ * Maximum unique (provider, endpoint, method) triplets per window.
+ * Matches the ingest API's 422 threshold — crossing this mid-window triggers
+ * an early flush so the current window is preserved instead of dropped.
+ */
+export const MAX_BUCKETS = 2000;
+
 // ---------------------------------------------------------------------------
 // Internal bucket structure
 // ---------------------------------------------------------------------------
@@ -47,6 +54,8 @@ export interface AggregatorConfig {
   environment?: string;
   /** SDK package version string. Defaults to "0.0.0". */
   sdkVersion?: string;
+  /** Maximum unique triplets per window. Defaults to MAX_BUCKETS (2000). */
+  maxBuckets?: number;
 }
 
 /**
@@ -60,6 +69,7 @@ export class Aggregator {
   private readonly _projectId: string;
   private readonly _environment: string;
   private readonly _sdkVersion: string;
+  private readonly _maxBuckets: number;
 
   private _buckets = new Map<string, Bucket>();
   private _windowStart: string | null = null;
@@ -69,6 +79,23 @@ export class Aggregator {
     this._projectId = config.projectId ?? "";
     this._environment = config.environment ?? "development";
     this._sdkVersion = config.sdkVersion ?? "0.0.0";
+    this._maxBuckets = config.maxBuckets ?? MAX_BUCKETS;
+  }
+
+  /** Build the bucket key for an event — kept consistent with ingest(). */
+  private _keyFor(event: RawEvent): string {
+    const provider = event.provider ?? "unknown";
+    const endpoint = event.endpointCategory ?? event.path;
+    return `${provider}::${endpoint}::${event.method}`;
+  }
+
+  /**
+   * True if ingesting this event would allocate a new bucket AND the current
+   * window is already at maxBuckets capacity. Callers should flush first.
+   */
+  wouldOverflow(event: RawEvent): boolean {
+    if (this._buckets.size < this._maxBuckets) return false;
+    return !this._buckets.has(this._keyFor(event));
   }
 
   // ---------------------------------------------------------------------------
@@ -89,7 +116,7 @@ export class Aggregator {
 
     const provider = event.provider ?? "unknown";
     const endpoint = event.endpointCategory ?? event.path;
-    const key = `${provider}::${endpoint}::${event.method}`;
+    const key = this._keyFor(event);
 
     let bucket = this._buckets.get(key);
     if (bucket === undefined) {
@@ -172,5 +199,10 @@ export class Aggregator {
   /** Number of unique provider + endpoint + method groups in the current window. */
   get bucketCount(): number {
     return this._buckets.size;
+  }
+
+  /** Configured maximum buckets per window. */
+  get maxBuckets(): number {
+    return this._maxBuckets;
   }
 }

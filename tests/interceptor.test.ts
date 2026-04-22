@@ -397,6 +397,94 @@ describe("double-count prevention", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Re-entrancy guard (_inFetchWrapper) must not leak across calls.
+//
+// Regression: if the fetch wrapper ever failed to reset _inFetchWrapper
+// (e.g. a throw between set-true and reset), every subsequent http.request
+// would be silently dropped for the rest of the process. These tests verify
+// the guard is reset in both success and throw paths, and that a throwing
+// user callback does not strand the guard in the "true" state.
+// ---------------------------------------------------------------------------
+
+describe("fetch re-entrancy guard", () => {
+  let server: TestServer;
+  const events: RawEvent[] = [];
+  const baseHandler = (_req: http.IncomingMessage, res: http.ServerResponse): void => {
+    res.writeHead(200);
+    res.end("ok");
+  };
+
+  beforeEach(async () => {
+    events.length = 0;
+    server = await startServer(baseHandler);
+  });
+
+  afterEach(async () => {
+    uninstall();
+    await server.close();
+  });
+
+  it("subsequent http.request is still captured after a successful fetch (guard reset on happy path)", async () => {
+    install((e) => events.push(e));
+
+    await fetch(server.baseUrl + "/fetch-ok");
+    await httpGet(server.baseUrl + "/http-after-success");
+
+    const httpEvent = events.find((e) => e.path === "/http-after-success");
+    expect(httpEvent).toBeDefined();
+    expect(httpEvent!.method).toBe("GET");
+  });
+
+  it("subsequent http.request is still captured after a fetch that throws (guard reset on error path)", async () => {
+    install((e) => events.push(e));
+
+    await expect(fetch("http://127.0.0.1:1/unreachable")).rejects.toThrow();
+    await httpGet(server.baseUrl + "/http-after-throw");
+
+    const httpEvent = events.find((e) => e.path === "/http-after-throw");
+    expect(httpEvent).toBeDefined();
+  });
+
+  it("throwing user callback during fetch does not leave re-entrancy guard stuck — later http.request still intercepted", async () => {
+    let fetchCallbackFired = false;
+    install((e) => {
+      if (e.path === "/fetch-throws") {
+        fetchCallbackFired = true;
+        throw new Error("user callback exploded");
+      }
+      events.push(e);
+    });
+
+    // Fetch whose callback throws. The wrapper swallows callback errors,
+    // but the guard must still end up reset regardless.
+    await fetch(server.baseUrl + "/fetch-throws");
+    expect(fetchCallbackFired).toBe(true);
+
+    // If the guard had leaked (stayed true), this http.request would be
+    // silently dropped. It must be captured normally.
+    await httpGet(server.baseUrl + "/http-after-throwing-cb");
+    const httpEvent = events.find((e) => e.path === "/http-after-throwing-cb");
+    expect(httpEvent).toBeDefined();
+  });
+
+  it("many consecutive fetches with throwing callback do not degrade http.request capture", async () => {
+    install((e) => {
+      if (e.path.startsWith("/fetch-")) {
+        throw new Error("always throws on fetch");
+      }
+      events.push(e);
+    });
+
+    for (let i = 0; i < 5; i++) {
+      await fetch(server.baseUrl + `/fetch-${i}`);
+    }
+
+    await httpGet(server.baseUrl + "/http-final");
+    expect(events.filter((e) => e.path === "/http-final")).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // getRawFetch
 // ---------------------------------------------------------------------------
 

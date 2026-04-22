@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { Aggregator } from "../src/core/aggregator.js";
+import { Aggregator, MAX_BUCKETS } from "../src/core/aggregator.js";
 import type { RawEvent } from "../src/core/types.js";
 
 function makeEvent(overrides: Partial<RawEvent> = {}): RawEvent {
@@ -300,6 +300,10 @@ describe("Aggregator — size and bucketCount", () => {
     expect(agg.bucketCount).toBe(0);
   });
 
+  it("MAX_BUCKETS constant is 2000", () => {
+    expect(MAX_BUCKETS).toBe(2000);
+  });
+
   it("large batch: 1000 events across 10 groups", () => {
     const agg = new Aggregator();
     const providers = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
@@ -312,5 +316,48 @@ describe("Aggregator — size and bucketCount", () => {
     for (const entry of summary.metrics) {
       expect(entry.requestCount).toBe(100);
     }
+  });
+});
+
+describe("Aggregator — bucket overflow protection", () => {
+  it("wouldOverflow returns false below the cap", () => {
+    const agg = new Aggregator({ maxBuckets: 10 });
+    for (let i = 0; i < 5; i++) {
+      agg.ingest(makeEvent({ provider: `p${i}`, endpointCategory: `ep${i}` }));
+    }
+    expect(agg.wouldOverflow(makeEvent({ provider: "new", endpointCategory: "new" }))).toBe(false);
+  });
+
+  it("wouldOverflow returns false at the cap when key is already known", () => {
+    const agg = new Aggregator({ maxBuckets: 3 });
+    agg.ingest(makeEvent({ provider: "a", endpointCategory: "a" }));
+    agg.ingest(makeEvent({ provider: "b", endpointCategory: "b" }));
+    agg.ingest(makeEvent({ provider: "c", endpointCategory: "c" }));
+    expect(agg.bucketCount).toBe(3);
+    // Same triplet — no new bucket needed
+    expect(agg.wouldOverflow(makeEvent({ provider: "a", endpointCategory: "a" }))).toBe(false);
+  });
+
+  it("wouldOverflow returns true at the cap when triplet is new", () => {
+    const agg = new Aggregator({ maxBuckets: 3 });
+    agg.ingest(makeEvent({ provider: "a", endpointCategory: "a" }));
+    agg.ingest(makeEvent({ provider: "b", endpointCategory: "b" }));
+    agg.ingest(makeEvent({ provider: "c", endpointCategory: "c" }));
+    expect(agg.wouldOverflow(makeEvent({ provider: "d", endpointCategory: "d" }))).toBe(true);
+  });
+
+  it("maxBuckets getter reflects configured value", () => {
+    expect(new Aggregator({ maxBuckets: 500 }).maxBuckets).toBe(500);
+    expect(new Aggregator().maxBuckets).toBe(MAX_BUCKETS);
+  });
+
+  it("default cap is 2000 — wouldOverflow fires at the 2001st unique triplet", () => {
+    const agg = new Aggregator();
+    for (let i = 0; i < 2000; i++) {
+      agg.ingest(makeEvent({ provider: `p${i}`, endpointCategory: `ep${i}` }));
+    }
+    expect(agg.bucketCount).toBe(2000);
+    const overflowEvent = makeEvent({ provider: "p2000", endpointCategory: "ep2000" });
+    expect(agg.wouldOverflow(overflowEvent)).toBe(true);
   });
 });
