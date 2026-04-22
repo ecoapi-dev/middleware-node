@@ -7,8 +7,9 @@
  */
 
 import WebSocket from "ws";
-import type { RecostConfig, TransportMode, WindowSummary } from "./types.js";
+import type { FlushStatus, RecostConfig, TransportMode, WindowSummary } from "./types.js";
 import { getRawFetch } from "./interceptor.js";
+import { MAX_BUCKETS } from "./aggregator.js";
 
 // ---------------------------------------------------------------------------
 // Resolved config (apply all defaults once at construction)
@@ -21,6 +22,7 @@ interface ResolvedConfig {
   baseUrl: string;
   localPort: number;
   maxRetries: number;
+  maxBuckets: number;
   debug: boolean;
   onError?: ((err: Error) => void) | undefined;
 }
@@ -33,6 +35,7 @@ function resolveConfig(config: RecostConfig): ResolvedConfig {
     baseUrl: (config.baseUrl ?? "https://api.recost.dev").replace(/\/$/, ""),
     localPort: config.localPort ?? 9847,
     maxRetries: config.maxRetries ?? 3,
+    maxBuckets: config.maxBuckets ?? MAX_BUCKETS,
     debug: config.debug ?? false,
     onError: config.onError,
   };
@@ -90,11 +93,13 @@ async function postCloud(
 export class Transport {
   readonly mode: TransportMode;
   private readonly _cfg: ResolvedConfig;
+  private _lastFlushStatus: FlushStatus | null = null;
 
   // Local WebSocket state
   private _ws: WebSocket | null = null;
   private _wsQueue: string[] = [];
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private _reconnectAttempts = 0;
   private _disposed = false;
 
   constructor(config: RecostConfig) {
@@ -125,6 +130,9 @@ export class Transport {
 
     ws.on("open", () => {
       this._ws = ws;
+      // Successful connect resets the backoff so the next disconnect retries
+      // promptly instead of inheriting whatever delay the previous outage hit.
+      this._reconnectAttempts = 0;
       // Drain queued messages
       for (const msg of this._wsQueue) {
         try { ws.send(msg); } catch { /* swallow */ }
@@ -142,55 +150,115 @@ export class Transport {
     });
   }
 
+  /**
+   * Exponential backoff with ±25% jitter:
+   *   500ms, 1s, 2s, 4s, 8s, 16s, 30s (capped) — each ±25% random.
+   *
+   * Aligned with the Python SDK's _LocalTransport so both languages behave
+   * identically on flaky local-extension restarts. Linear 3s retry was chosen
+   * for simplicity but tends to thrash when the extension is genuinely down.
+   */
+  private _computeBackoffMs(): number {
+    const base = Math.min(500 * 2 ** this._reconnectAttempts, 30_000);
+    const jitter = 1 + (Math.random() - 0.5) * 0.5; // 0.75..1.25
+    return Math.floor(base * jitter);
+  }
+
   private _scheduleReconnect(): void {
     if (this._disposed || this._reconnectTimer !== null) return;
+    const delay = this._computeBackoffMs();
+    this._reconnectAttempts += 1;
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
       this._connectWs();
-    }, 3_000);
+    }, delay);
   }
 
   // ---------------------------------------------------------------------------
   // Public API
   // ---------------------------------------------------------------------------
 
-  /** Send a WindowSummary. Never throws — errors are forwarded to onError. */
+  /** Outcome of the most recent flush, or null if no flush has completed. */
+  get lastFlushStatus(): FlushStatus | null {
+    return this._lastFlushStatus;
+  }
+
+  /**
+   * Send a WindowSummary. Never throws — errors are forwarded to onError.
+   *
+   * If the summary has more than maxBuckets metrics (degenerate burst case),
+   * it is split into chunks of up to maxBuckets and sent sequentially. The
+   * lastFlushStatus property reflects the final chunk's outcome.
+   */
   async send(summary: WindowSummary): Promise<void> {
+    if (summary.metrics.length > this._cfg.maxBuckets) {
+      const chunkSize = this._cfg.maxBuckets;
+      for (let i = 0; i < summary.metrics.length; i += chunkSize) {
+        const chunk: WindowSummary = {
+          ...summary,
+          metrics: summary.metrics.slice(i, i + chunkSize),
+        };
+        await this._sendOne(chunk);
+      }
+      return;
+    }
+    await this._sendOne(summary);
+  }
+
+  private async _sendOne(summary: WindowSummary): Promise<void> {
     const body = JSON.stringify(summary);
+    const windowSize = summary.metrics.length;
 
     try {
       if (this._cfg.mode === "cloud") {
         const url = `${this._cfg.baseUrl}/projects/${this._cfg.projectId}/telemetry`;
         const result = await postCloud(url, body, this._cfg.apiKey, this._cfg.maxRetries);
         if (!result.ok) {
-          const msg = result.status === 401
-            ? `[recost] HTTP 401 — API key is invalid or has been revoked. Check RECOST_API_KEY.`
-            : result.status === 403
-              ? `[recost] HTTP 403 — API key does not have access to this project. Check RECOST_PROJECT_ID.`
-              : result.status === 404
-                ? `[recost] HTTP 404 — Project not found. Check RECOST_PROJECT_ID.`
-                : `[recost] HTTP ${result.status} — telemetry payload rejected`;
-          const err = new Error(msg);
-          if (this._cfg.onError) this._cfg.onError(err);
-          else if (this._cfg.debug) console.error(msg);
+          this._reportRejection(result.status, windowSize);
+          this._lastFlushStatus = { status: "error", windowSize, timestamp: Date.now() };
+          return;
         }
-      } else {
-        // Local WebSocket
-        if (this._ws?.readyState === WebSocket.OPEN) {
-          this._ws.send(body);
-        } else {
-          // Queue for when the connection opens
-          this._wsQueue.push(body);
-        }
+        this._lastFlushStatus = { status: "ok", windowSize, timestamp: Date.now() };
+        return;
       }
+
+      // Local WebSocket
+      if (this._ws?.readyState === WebSocket.OPEN) {
+        this._ws.send(body);
+      } else {
+        // Queue for when the connection opens
+        this._wsQueue.push(body);
+      }
+      this._lastFlushStatus = { status: "ok", windowSize, timestamp: Date.now() };
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
+      const msg = `[recost] transport error (windowSize=${windowSize}): ${error.message}`;
+      console.warn(msg);
       if (this._cfg.onError) {
         this._cfg.onError(error);
-      } else if (this._cfg.debug) {
-        console.error("[recost] transport error:", error.message);
       }
+      this._lastFlushStatus = { status: "error", windowSize, timestamp: Date.now() };
     }
+  }
+
+  /**
+   * Emit a warning for a non-2xx ingest response. Warning is always logged
+   * (regardless of debug) and onError is fired if configured. Data loss on
+   * rejection was silent before — this restores observability.
+   */
+  private _reportRejection(status: number, windowSize: number): void {
+    const reason = status === 401
+      ? "API key is invalid or has been revoked. Check RECOST_API_KEY."
+      : status === 403
+        ? "API key does not have access to this project. Check RECOST_PROJECT_ID."
+        : status === 404
+          ? "Project not found. Check RECOST_PROJECT_ID."
+          : status === 422
+            ? "telemetry payload rejected (possibly over the 2000-bucket limit)"
+            : "telemetry payload rejected";
+    const msg = `[recost] HTTP ${status} — ${reason} (windowSize=${windowSize})`;
+    console.warn(msg);
+    if (this._cfg.onError) this._cfg.onError(new Error(msg));
   }
 
   /** Close WebSocket and cancel pending reconnect. */

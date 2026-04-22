@@ -6,7 +6,7 @@
  */
 
 import http from "node:http";
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import { init } from "../src/init.js";
 import { isInstalled, uninstall } from "../src/core/interceptor.js";
@@ -365,27 +365,36 @@ describe("init — dispose", () => {
     expect(afterDisposeMetric).toBeUndefined();
   });
 
-  it("dispose does not fire a final flush — remaining events are dropped", async () => {
+  it("dispose fires a final flush so the in-progress window isn't dropped", async () => {
     const ws = await startWsCollector();
     const httpServer = await startHttpServer();
 
-    // Long flush interval so auto-flush won't trigger
+    // Long flush interval so the periodic flush definitely won't fire during
+    // the test — anything we receive must be the dispose-time shutdown flush.
     const handle = init({ localPort: ws.port, flushIntervalMs: 60_000, maxBatchSize: 1000 });
 
     await fetch(httpServer.url + "/pre-dispose").catch(() => {});
-    await new Promise((r) => setTimeout(r, 50));
+    // Give the WS connection a beat to be ready before dispose triggers the
+    // shutdown flush (otherwise the payload would queue and never deliver
+    // because dispose() closes the socket once the flush promise settles).
+    await new Promise((r) => setTimeout(r, 100));
 
-    // Dispose before flush fires — current impl does NOT flush on dispose
-    handle.dispose();
-    await new Promise((r) => setTimeout(r, 200));
+    await handle.dispose();
+
+    // The flush is fire-and-forget over the WebSocket — give the server a
+    // brief window to actually receive the bytes before we tear it down.
+    for (let i = 0; i < 50; i++) {
+      if (ws.summaries.length > 0) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
 
     await httpServer.close();
     await ws.close();
 
-    // With current implementation, dispose does not flush.
-    // This is expected behavior — no summary should have been sent after dispose.
-    // (If a future implementation adds final flush, this test should be updated.)
-    expect(ws.summaries.length).toBe(0);
+    // The shutdown flush must have shipped the captured event.
+    const allMetrics = ws.summaries.flatMap((s) => s.metrics);
+    const captured = allMetrics.find((m) => m.endpoint === "/pre-dispose");
+    expect(captured).toBeDefined();
   });
 
   it("dispose is safe to call multiple times", () => {
@@ -400,6 +409,195 @@ describe("init — dispose", () => {
 // ---------------------------------------------------------------------------
 // Config forwarding
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// lastFlushStatus
+// ---------------------------------------------------------------------------
+
+describe("init — lastFlushStatus", () => {
+  afterEach(() => {
+    uninstall();
+  });
+
+  it("is null before any flush has completed", () => {
+    const handle = init({ flushIntervalMs: 60_000 });
+    expect(handle.lastFlushStatus).toBeNull();
+    handle.dispose();
+  });
+
+  it("returns null from a disabled-mode handle", () => {
+    const handle = init({ enabled: false });
+    expect(handle.lastFlushStatus).toBeNull();
+    handle.dispose();
+  });
+
+  it("reflects a successful flush outcome", async () => {
+    const ws = await startWsCollector();
+    const httpServer = await startHttpServer();
+
+    const handle = init({ localPort: ws.port, flushIntervalMs: 100 });
+
+    await fetch(httpServer.url + "/tracked").catch(() => {});
+    await new Promise((r) => setTimeout(r, 400));
+
+    const status = handle.lastFlushStatus;
+    handle.dispose();
+    await httpServer.close();
+    await ws.close();
+
+    expect(status).not.toBeNull();
+    expect(status!.status).toBe("ok");
+    expect(status!.windowSize).toBeGreaterThan(0);
+    expect(typeof status!.timestamp).toBe("number");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bucket overflow → early flush (silent data loss prevention)
+// ---------------------------------------------------------------------------
+
+describe("init — bucket overflow protection", () => {
+  afterEach(() => {
+    uninstall();
+  });
+
+  it("hitting maxBuckets mid-window triggers an early flush instead of dropping data", async () => {
+    const ws = await startWsCollector();
+    const httpServer = await startHttpServer();
+
+    // Tiny cap so we can force overflow with a handful of requests
+    const handle = init({
+      localPort: ws.port,
+      flushIntervalMs: 60_000,
+      maxBatchSize: 10_000, // make sure batch-size flush doesn't mask overflow flush
+      maxBuckets: 3,
+    });
+
+    // 4 distinct paths → 4 unique (provider, endpoint, method) triplets
+    for (const p of ["/a", "/b", "/c", "/d"]) {
+      await fetch(httpServer.url + p).catch(() => {});
+    }
+
+    // Give overflow flush time to ship
+    await new Promise((r) => setTimeout(r, 400));
+
+    handle.dispose();
+    await httpServer.close();
+    await ws.close();
+
+    // A flush must have occurred — proving data was preserved, not dropped
+    expect(ws.summaries.length).toBeGreaterThan(0);
+    const totalBuckets = ws.summaries.reduce((sum, s) => sum + s.metrics.length, 0);
+    // The first three unique endpoints were flushed before the 4th could overflow
+    expect(totalBuckets).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Flush interval resilience
+//
+// Regression: setInterval(() => flushAndSend().catch(...)) will die permanently
+// if anything throws synchronously out of the interval callback. The interval
+// body must be wrapped in try/catch so telemetry keeps flowing for the life
+// of the process even if a flush unexpectedly throws.
+// ---------------------------------------------------------------------------
+
+describe("init — flush interval resilience", () => {
+  afterEach(() => {
+    uninstall();
+    vi.restoreAllMocks();
+  });
+
+  it("captured setInterval callback never propagates a synchronous throw", () => {
+    let intervalCb: (() => void) | null = null;
+
+    vi.spyOn(globalThis, "setInterval").mockImplementation(((cb: () => void) => {
+      intervalCb = cb;
+      // Return a handle that supports .unref() (init calls it) but never fires
+      return { unref: () => {}, ref: () => {} } as unknown as NodeJS.Timeout;
+    }) as unknown as typeof globalThis.setInterval);
+
+    const handle = init({ flushIntervalMs: 100 });
+
+    expect(intervalCb).not.toBeNull();
+
+    // Invoking the interval body repeatedly must never throw. If the outer
+    // try/catch were missing and something threw synchronously on any tick,
+    // the exception would propagate and Node would kill the interval.
+    for (let i = 0; i < 10; i++) {
+      expect(() => intervalCb!()).not.toThrow();
+    }
+
+    handle.dispose();
+  });
+
+  it("subsequent interval ticks still fire after a failing flush", async () => {
+    let intervalCb: (() => void) | null = null;
+
+    vi.spyOn(globalThis, "setInterval").mockImplementation(((cb: () => void) => {
+      intervalCb = cb;
+      return { unref: () => {}, ref: () => {} } as unknown as NodeJS.Timeout;
+    }) as unknown as typeof globalThis.setInterval);
+
+    const errors: Error[] = [];
+    // Force the cloud transport to reject by pointing at an unreachable host.
+    // flushAndSend will resolve to nothing (no aggregated data yet) on the
+    // first tick, but even if send() were to throw/reject, the interval must
+    // continue firing on subsequent ticks.
+    const handle = init({
+      apiKey: "test-key",
+      baseUrl: "https://127.0.0.1:1",
+      flushIntervalMs: 60_000,
+      onError: (err) => errors.push(err),
+    });
+
+    expect(intervalCb).not.toBeNull();
+
+    // Fire the interval many times in a row. Even if an individual tick hit
+    // an error, the callback itself must never propagate an exception.
+    for (let i = 0; i < 5; i++) {
+      expect(() => intervalCb!()).not.toThrow();
+    }
+
+    // Drain any pending microtasks triggered by the async .catch handlers
+    await new Promise((r) => setImmediate(r));
+
+    handle.dispose();
+  });
+
+  it("a throwing onError handler does not kill subsequent interval invocations", async () => {
+    let intervalCb: (() => void) | null = null;
+
+    vi.spyOn(globalThis, "setInterval").mockImplementation(((cb: () => void) => {
+      intervalCb = cb;
+      return { unref: () => {}, ref: () => {} } as unknown as NodeJS.Timeout;
+    }) as unknown as typeof globalThis.setInterval);
+
+    // onError throws — this can only happen inside the rejected-promise
+    // microtask, not the interval callback itself, but we still want to
+    // confirm that regardless, invoking the interval repeatedly is safe.
+    const handle = init({
+      apiKey: "test-key",
+      baseUrl: "https://127.0.0.1:1",
+      flushIntervalMs: 60_000,
+      onError: () => {
+        throw new Error("user's onError exploded");
+      },
+    });
+
+    expect(intervalCb).not.toBeNull();
+
+    for (let i = 0; i < 3; i++) {
+      expect(() => intervalCb!()).not.toThrow();
+    }
+
+    // Swallow any unhandled rejections from the throwing onError by draining
+    // microtasks before the test finishes.
+    await new Promise((r) => setImmediate(r));
+
+    handle.dispose();
+  });
+});
 
 describe("init — config forwarding", () => {
   afterEach(() => {

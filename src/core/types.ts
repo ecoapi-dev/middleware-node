@@ -121,6 +121,12 @@ export interface RecostConfig {
   flushIntervalMs?: number;
   /** Trigger an early flush when this many raw events accumulate. Defaults to 100. */
   maxBatchSize?: number;
+  /**
+   * Maximum unique (provider, endpoint, method) triplets per window. Defaults to 2000.
+   * Crossing this threshold mid-window triggers an early flush so the API does
+   * not reject the payload with a 422.
+   */
+  maxBuckets?: number;
   /** Localhost port for the VS Code extension WebSocket in local mode. Defaults to 9847. */
   localPort?: number;
   /** Log detailed telemetry activity to stdout when true. Defaults to false. */
@@ -135,6 +141,12 @@ export interface RecostConfig {
   baseUrl?: string;
   /** Maximum retry attempts for failed cloud flushes before dropping the payload. Defaults to 3. */
   maxRetries?: number;
+  /**
+   * Milliseconds dispose() will wait for the final shutdown flush to complete
+   * before giving up and closing the transport. Defaults to 3000.
+   * Mirrors the Python SDK's shutdown_flush_timeout_ms.
+   */
+  shutdownFlushTimeoutMs?: number;
   /** Called when the SDK encounters an internal error. Silently swallowed if omitted. */
   onError?: (error: Error) => void;
 }
@@ -148,3 +160,16 @@ export interface RecostConfig {
  * Determined automatically: "cloud" if apiKey is present, "local" otherwise.
  */
 export type TransportMode = "local" | "cloud";
+
+// ---------------------------------------------------------------------------
+// FlushStatus
+// ---------------------------------------------------------------------------
+
+/** Outcome of the most recent flush, exposed on the recost handle. */
+export interface FlushStatus {
+  status: "ok" | "error";
+  /** Number of metric entries (unique triplets) in the flushed window. */
+  windowSize: number;
+  /** Milliseconds since epoch when the flush completed. */
+  timestamp: number;
+}

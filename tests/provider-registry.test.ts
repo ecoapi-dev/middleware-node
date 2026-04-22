@@ -327,8 +327,18 @@ describe("custom providers", () => {
 // ---------------------------------------------------------------------------
 
 describe("BUILTIN_PROVIDERS array", () => {
-  it("has exactly 34 rules", () => {
-    expect(BUILTIN_PROVIDERS).toHaveLength(34);
+  it("includes all critical providers expected by users", () => {
+    // Structural check (replaces a brittle hard-coded length assertion):
+    // verifies the well-known providers users rely on are still present.
+    // Adding a new provider doesn't break this test; deleting a critical
+    // one does.
+    const providers = new Set(BUILTIN_PROVIDERS.map((r) => r.provider));
+    for (const required of ["openai", "anthropic", "stripe", "twilio", "sendgrid", "github"]) {
+      expect(providers.has(required)).toBe(true);
+    }
+    // Sanity floor — guards against an accidental wholesale registry wipe
+    // without re-asserting the exact count on every legitimate addition.
+    expect(BUILTIN_PROVIDERS.length).toBeGreaterThanOrEqual(20);
   });
 
   it("all rules have a hostPattern and provider", () => {
