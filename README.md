@@ -160,6 +160,7 @@ import {
 
 init({
   apiKey: process.env.RECOST_API_KEY,
+  projectId: process.env.RECOST_PROJECT_ID,
   onError(err) {
     if (err instanceof RecostLocalUnreachableError) log.warn("recost: local extension unreachable; check VS Code");
     else if (err instanceof RecostFatalAuthError) pagerduty.fire(err);

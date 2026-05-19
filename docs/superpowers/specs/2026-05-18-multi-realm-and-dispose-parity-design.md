@@ -82,17 +82,24 @@ export function uninstall(): void {
   };
   // …apply to globalThis.fetch, http.request, http.get, https.request, https.get…
 
+  // Detach the callback unconditionally so orphaned wrappers (still chained
+  // under a third-party wrapper) become pure passthroughs.
+  state.callback = null;
+
   if (conflictsDetected) {
-    // route through callback-installed onError; the wrapper still in place
-    // (whoever wrapped us) continues to delegate to our patched fn, but we
-    // null the callback so we stop recording.
+    // Conflict path: route the advisory through onError, then leave the rest
+    // of state intact. state.installed stays true so a subsequent install()
+    // fires RecostInterceptorAlreadyInstalledError. Process restart is the
+    // only recovery — see "Post-conflict re-install" below.
     state.onError?.(new RecostInterceptorPatchOverwrittenError());
+    return;
   }
 
-  state.callback = null;
+  // Clean path: lifecycle ended cleanly, everything resets.
+  state.onError = null;
   state.installed = false;
-  // Originals stay in state in case a future install() re-uses them, but the
-  // installed flag is what gates re-entry.
+  // (state.original* / state.patched* are also nulled here in the real
+  // implementation — omitted from the pseudocode for brevity.)
 }
 ```
 
