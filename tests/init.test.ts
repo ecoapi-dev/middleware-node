@@ -696,3 +696,53 @@ describe("init — config validation", () => {
     expect(isInstalled()).toBe(false);
   });
 });
+
+describe("init — flush (#19)", () => {
+  afterEach(() => {
+    // Belt-and-suspenders cleanup in case a test left things installed.
+    uninstall();
+  });
+
+  it("handle.flush() flushes the current window without disposing", async () => {
+    const ws = await startWsCollector();
+    const httpServer = await startHttpServer((_req, res) => {
+      res.writeHead(200);
+      res.end("ok");
+    });
+    const handle = init({ localPort: ws.port, flushIntervalMs: 60_000 });
+
+    try {
+      // Generate one event so the aggregator window is non-empty.
+      await fetch(`${httpServer.url}/x`);
+
+      // The fetch wrapper emits telemetry on the next macrotask; give it a
+      // tick. (interceptor.test.ts uses the same pattern.)
+      await new Promise<void>((r) => setTimeout(r, 50));
+
+      await handle.flush();
+
+      // Wait briefly for the WS write to be delivered.
+      const deadline = Date.now() + 1_000;
+      while (ws.summaries.length === 0 && Date.now() < deadline) {
+        await new Promise<void>((r) => setTimeout(r, 25));
+      }
+
+      expect(ws.summaries.length).toBeGreaterThanOrEqual(1);
+      // Handle is still alive: dispose() should still run cleanly.
+      expect(isInstalled()).toBe(true);
+      await handle.dispose();
+      expect(isInstalled()).toBe(false);
+    } finally {
+      await httpServer.close();
+      await ws.close();
+    }
+  });
+
+  it("handle.flush() after dispose() resolves immediately as a no-op", async () => {
+    const handle = init({ flushIntervalMs: 60_000 });
+    await handle.dispose();
+    // Should resolve without throwing and without re-installing anything.
+    await expect(handle.flush()).resolves.toBeUndefined();
+    expect(isInstalled()).toBe(false);
+  });
+});

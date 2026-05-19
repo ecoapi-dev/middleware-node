@@ -24,6 +24,22 @@ export interface RecostHandle {
    * cut off when the process exits.
    */
   dispose(): Promise<void>;
+
+  /**
+   * Flush the current aggregator window without disposing. Resolves when the
+   * flush completes; never rejects — errors route through the configured
+   * `onError` callback (or are swallowed silently if none is configured).
+   *
+   * Useful before a known process-exit boundary on platforms where
+   * `dispose()` doesn't fit your shutdown ordering. After `dispose()` has
+   * run, `flush()` resolves immediately as a no-op.
+   *
+   * Cross-SDK parity: equivalent to the Python SDK's `flush_blocking()`. JS
+   * has no thread-blocking primitive, so the Node parallel is the awaited
+   * promise. See the README "Cleanup / teardown" section.
+   */
+  flush(): Promise<void>;
+
   /** Outcome of the most recent flush, or null if no flush has completed yet. */
   readonly lastFlushStatus: FlushStatus | null;
 }
@@ -48,7 +64,7 @@ export function init(config: RecostConfig = {}): RecostHandle {
 
   const enabled = config.enabled ?? true;
   if (!enabled) {
-    const noop: RecostHandle = { dispose: async () => {}, lastFlushStatus: null };
+    const noop: RecostHandle = { dispose: async () => {}, flush: async () => {}, lastFlushStatus: null };
     _handle = noop;
     return noop;
   }
@@ -184,6 +200,16 @@ export function init(config: RecostConfig = {}): RecostHandle {
 
       transport.dispose();
       if (_handle === handle) _handle = null;
+    },
+    async flush(): Promise<void> {
+      // No-op after dispose. Idempotent and safe to call from a final-exit
+      // handler that also calls dispose() — order doesn't matter.
+      if (disposed) return;
+      try {
+        await flushAndSend();
+      } catch {
+        // flushAndSend already routes errors through onError
+      }
     },
     get lastFlushStatus(): FlushStatus | null {
       return transport.lastFlushStatus;
