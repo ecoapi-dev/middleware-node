@@ -5,7 +5,7 @@
 
 import type { FlushStatus, RecostConfig } from "./core/types.js";
 import { ProviderRegistry } from "./core/provider-registry.js";
-import { install, uninstall } from "./core/interceptor.js";
+import { install, setOnError, uninstall } from "./core/interceptor.js";
 import { Aggregator, MAX_BUCKETS } from "./core/aggregator.js";
 import { Transport } from "./core/transport.js";
 import { validateConfig } from "./core/validate-config.js";
@@ -90,6 +90,11 @@ export function init(config: RecostConfig = {}): RecostHandle {
     }
     await transport.send(summary);
   };
+
+  // Route advisory interceptor errors (dual-package detection, uninstall
+  // conflicts) through the user's onError. setOnError(null) is called by
+  // dispose() implicitly via uninstall() resetting the state.
+  setOnError(config.onError ?? null);
 
   install((event) => {
     // Drop excluded URLs

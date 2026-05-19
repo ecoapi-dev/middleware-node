@@ -905,6 +905,76 @@ describe("interceptor — globalThis-keyed state (#11.1)", () => {
   });
 });
 
+describe("interceptor — dual-package state (#11.1)", () => {
+  afterEach(() => {
+    uninstall();
+  });
+
+  it("second install() fires RecostInterceptorAlreadyInstalledError and is a no-op", async () => {
+    const { setOnError } = await import("../src/core/interceptor.js");
+    const { RecostInterceptorAlreadyInstalledError } = await import("../src/core/types.js");
+
+    const errors: Error[] = [];
+    setOnError((e) => errors.push(e));
+
+    const eventsFirst: RawEvent[] = [];
+    const eventsSecond: RawEvent[] = [];
+
+    install((e) => eventsFirst.push(e));
+    const firstPatched = globalThis.fetch;
+
+    install((e) => eventsSecond.push(e));
+    const afterSecondPatched = globalThis.fetch;
+
+    expect(afterSecondPatched).toBe(firstPatched); // not re-wrapped
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(RecostInterceptorAlreadyInstalledError);
+  });
+
+  it("after a no-op second install, only the first callback fires", async () => {
+    const server = await startServer((_req, res) => {
+      res.end("ok");
+    });
+    try {
+      const eventsFirst: RawEvent[] = [];
+      const eventsSecond: RawEvent[] = [];
+      install((e) => eventsFirst.push(e));
+      install((e) => eventsSecond.push(e)); // no-op
+
+      await fetch(`${server.baseUrl}/x`);
+      await flushDeferred();
+
+      expect(eventsFirst).toHaveLength(1);
+      expect(eventsSecond).toHaveLength(0);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("setOnError(null) clears the registered error handler", async () => {
+    const { setOnError } = await import("../src/core/interceptor.js");
+    const errors: Error[] = [];
+    setOnError((e) => errors.push(e));
+    install(() => {});
+    setOnError(null);
+
+    install(() => {}); // second install — should not fire any callback
+    expect(errors).toHaveLength(0);
+  });
+
+  it("after a clean uninstall, install() succeeds again with no error fired", async () => {
+    const { setOnError } = await import("../src/core/interceptor.js");
+    const errors: Error[] = [];
+    setOnError((e) => errors.push(e));
+
+    install(() => {});
+    uninstall();
+    install(() => {}); // clean re-install
+    expect(errors).toHaveLength(0);
+    expect(isInstalled()).toBe(true);
+  });
+});
+
 describe("interceptor — typed errors (#11)", () => {
   it("RecostInterceptorAlreadyInstalledError extends RecostError and is named correctly", async () => {
     const { RecostError, RecostInterceptorAlreadyInstalledError } = await import(

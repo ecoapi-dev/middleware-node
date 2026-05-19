@@ -13,6 +13,7 @@ import http from "node:http";
 import https from "node:https";
 import { performance } from "node:perf_hooks";
 import type { RawEvent } from "./types.js";
+import { RecostInterceptorAlreadyInstalledError } from "./types.js";
 import { isoNow } from "./time.js";
 
 // ---------------------------------------------------------------------------
@@ -542,7 +543,15 @@ function makeGetWrapper(patchedRequest: HttpRequestFn): HttpGetFn {
  */
 export function install(callback: EventCallback): void {
   const state = getState();
-  if (state.installed) return;
+  if (state.installed) {
+    try {
+      state.onError?.(new RecostInterceptorAlreadyInstalledError());
+    } catch {
+      // The host's onError threw — swallow so we never break their app
+      // from inside an advisory notification.
+    }
+    return;
+  }
 
   state.callback = callback;
 
@@ -615,4 +624,14 @@ export function isInstalled(): boolean {
  */
 export function getRawFetch(): typeof globalThis.fetch {
   return getState().originalFetch ?? globalThis.fetch;
+}
+
+/**
+ * Wire a host-supplied error callback into the interceptor's state. Used by
+ * `init()` to route typed interceptor errors (dual-package detection,
+ * uninstall conflicts) through the user's configured `onError`. Setting to
+ * `null` clears the registration.
+ */
+export function setOnError(cb: ((err: Error) => void) | null): void {
+  getState().onError = cb;
 }

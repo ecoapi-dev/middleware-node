@@ -32,7 +32,7 @@ export type { RecostHandle } from "./init.js";
 
 // Core classes (for advanced / direct usage)
 export { ProviderRegistry, BUILTIN_PROVIDERS } from "./core/provider-registry.js";
-export { install, uninstall, isInstalled } from "./core/interceptor.js";
+export { install, uninstall, isInstalled, setOnError } from "./core/interceptor.js";
 export type { EventCallback } from "./core/interceptor.js";
 export { Aggregator, MAX_BUCKETS } from "./core/aggregator.js";
 export { Transport } from "./core/transport.js";
