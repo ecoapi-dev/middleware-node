@@ -1234,7 +1234,7 @@ Replace with:
 
 In the same file, find the `### Custom providers` section ending at line 179 (closing ``` of the code block, just before `### Cleanup / teardown`):
 
-```markdown
+````markdown
 ### Custom providers
 
 ```ts
@@ -1252,11 +1252,11 @@ init({
 ```
 
 ### Cleanup / teardown
-```
+````
 
 Replace with:
 
-```markdown
+````markdown
 ### Custom providers
 
 ```ts
@@ -1285,7 +1285,7 @@ Custom and built-in rules are merged and sorted by specificity at `ProviderRegis
 So a custom catch-all (`{ hostPattern: "api.openai.com", provider: "openai-mock" }` with no `pathPrefix`) does NOT shadow built-in path-specific OpenAI rules — those are more specific. A custom rule with `pathPrefix: "/v1/chat/completions"` on the same host DOES override the built-in (equal specificity → custom wins).
 
 ### Cleanup / teardown
-```
+````
 
 - [ ] **Step 3: Update the inline code-comment in the `Using the registry directly` section**
 
@@ -1346,7 +1346,7 @@ git log --oneline origin/main..HEAD
 
 Expected output (six commits, newest first):
 
-```
+```text
 <sha> docs(readme): describe specificity-based registry priority (#13)
 <sha> docs(registry): cite Twilio pricing source-of-truth (#21)
 <sha> fix(aggregator): enforce soft bucket cap via _overflow bucket (#13)

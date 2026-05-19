@@ -18,7 +18,7 @@ src/
   init.ts                 # Main entry point — wires interceptor, registry, aggregator, transport
   core/
     types.ts              # All interfaces: RawEvent, MetricEntry, WindowSummary, ProviderDef, EcoAPIConfig, TransportMode
-    provider-registry.ts  # ProviderRegistry — 34 built-in rules (14 providers), wildcard host matching, custom provider priority
+    provider-registry.ts  # ProviderRegistry — 34 built-in rules (14 providers), wildcard host matching, specificity-sorted rule list (custom wins on tie)
     interceptor.ts        # Patches globalThis.fetch, http.request, https.request, http.get, https.get; double-count guard; query stripping
     aggregator.ts         # Time-windowed bucketing by provider+endpoint+method, p50/p95 percentiles, cost aggregation
     transport.ts          # Cloud mode (HTTPS POST with exponential backoff, max 3 retries) + local mode (WebSocket with auto-reconnect)
@@ -75,7 +75,7 @@ LICENSE
 - **Infrastructure**: Pinecone, AWS (wildcard), Google Cloud (wildcard)
 - **Other**: GitHub, CoinGecko, Hacker News, wttr.in, ZenQuotes, ip-api
 
-Custom providers are prepended before built-ins (higher priority). Unrecognized hosts are grouped under `"unknown"`.
+Custom and built-in rules are merged and sorted by specificity at construction time: rules with a `pathPrefix` come before those without, longer `pathPrefix` wins, exact host beats `*.` wildcard, and on equal specificity custom rules win. So a custom catch-all does not shadow built-in path-specific rules, but a custom rule with an equal-or-more-specific `pathPrefix` overrides the built-in. Unrecognized hosts are grouped under `"unknown"`, and host-only catch-all matches return `"other"` as the endpoint category.
 
 ## Transport Modes
 
