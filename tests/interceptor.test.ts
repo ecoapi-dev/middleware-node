@@ -873,6 +873,37 @@ describe("http.request end-of-body latency and chunked bytes", () => {
   });
 });
 
+describe("interceptor — globalThis-keyed state (#11.1)", () => {
+  const STATE_KEY = Symbol.for("@recost-dev/node:interceptor-state");
+
+  afterEach(() => {
+    uninstall();
+  });
+
+  it("install() populates globalThis[STATE_KEY] with installed=true and saved originals", () => {
+    // The state object may already exist on globalThis from earlier tests in
+    // this file (getState() lazily creates it). What matters is that before
+    // install() the installed flag is false (or the key is absent entirely).
+    const priorState = (globalThis as Record<symbol, unknown>)[STATE_KEY] as
+      | { installed: boolean }
+      | undefined;
+    expect(priorState?.installed ?? false).toBe(false);
+
+    const events: RawEvent[] = [];
+    install((e) => events.push(e));
+
+    const state = (globalThis as Record<symbol, unknown>)[STATE_KEY] as
+      | { installed: boolean; originalFetch: unknown; patchedFetch: unknown }
+      | undefined;
+
+    expect(state).toBeDefined();
+    expect(state!.installed).toBe(true);
+    expect(state!.originalFetch).toBeTypeOf("function");
+    expect(state!.patchedFetch).toBeTypeOf("function");
+    expect(globalThis.fetch).toBe(state!.patchedFetch);
+  });
+});
+
 describe("interceptor — typed errors (#11)", () => {
   it("RecostInterceptorAlreadyInstalledError extends RecostError and is named correctly", async () => {
     const { RecostError, RecostInterceptorAlreadyInstalledError } = await import(

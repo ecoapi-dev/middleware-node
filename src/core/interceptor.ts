@@ -21,21 +21,63 @@ import { isoNow } from "./time.js";
 export type EventCallback = (event: RawEvent) => void;
 
 // ---------------------------------------------------------------------------
-// Module-level singleton state
+// Singleton state — stored on globalThis under a registry symbol so two
+// copies of @recost-dev/node loaded in the same realm (dual-package hazard)
+// coordinate through a single state object.
 // ---------------------------------------------------------------------------
 
-let _installed = false;
-let _callback: EventCallback | null = null;
+const STATE_KEY = Symbol.for("@recost-dev/node:interceptor-state");
 
-/** Set to true while inside the fetch wrapper to prevent http.request double-counting. */
-let _inFetchWrapper = false;
+/**
+ * Shape of the shared interceptor state. The patched wrappers close over a
+ * reference to this object, so reading state via property access always sees
+ * the current snapshot regardless of which package copy installed first.
+ *
+ * The shape is intentionally permanent — every present and future copy of
+ * the SDK reads/writes through this contract. New fields must default to
+ * `null` so older copies stay backwards-compatible.
+ */
+interface InterceptorState {
+  installed: boolean;
+  callback: EventCallback | null;
+  onError: ((err: Error) => void) | null;
+  inFetchWrapper: boolean;
+  originalFetch: typeof globalThis.fetch | null;
+  originalHttpRequest: typeof http.request | null;
+  originalHttpGet: typeof http.get | null;
+  originalHttpsRequest: typeof https.request | null;
+  originalHttpsGet: typeof https.get | null;
+  patchedFetch: typeof globalThis.fetch | null;
+  patchedHttpRequest: typeof http.request | null;
+  patchedHttpGet: typeof http.get | null;
+  patchedHttpsRequest: typeof https.request | null;
+  patchedHttpsGet: typeof https.get | null;
+}
 
-// Original function references — restored on uninstall
-let _originalFetch: typeof globalThis.fetch | null = null;
-let _originalHttpRequest: typeof http.request | null = null;
-let _originalHttpGet: typeof http.get | null = null;
-let _originalHttpsRequest: typeof https.request | null = null;
-let _originalHttpsGet: typeof https.get | null = null;
+function getState(): InterceptorState {
+  const g = globalThis as Record<symbol, InterceptorState | undefined>;
+  let s = g[STATE_KEY];
+  if (s === undefined) {
+    s = {
+      installed: false,
+      callback: null,
+      onError: null,
+      inFetchWrapper: false,
+      originalFetch: null,
+      originalHttpRequest: null,
+      originalHttpGet: null,
+      originalHttpsRequest: null,
+      originalHttpsGet: null,
+      patchedFetch: null,
+      patchedHttpRequest: null,
+      patchedHttpGet: null,
+      patchedHttpsRequest: null,
+      patchedHttpsGet: null,
+    };
+    g[STATE_KEY] = s;
+  }
+  return s;
+}
 
 // ---------------------------------------------------------------------------
 // URL extraction helper
@@ -202,6 +244,15 @@ function buildEvent(
 // ---------------------------------------------------------------------------
 
 const patchedFetch: typeof globalThis.fetch = async (input, init?) => {
+  const state = getState();
+
+  // If the SDK has been detached (callback cleared on uninstall, but our
+  // wrapper still chained underneath a third-party wrapper), short-circuit
+  // to a pure passthrough. No instrumentation, no measurement, no events.
+  if (state.callback === null || state.originalFetch === null) {
+    return (state.originalFetch ?? globalThis.fetch)(input, init);
+  }
+
   let parsed: ParsedUrl | null = null;
   let method = "GET";
   let requestBytesPromise: Promise<number> | null = null;
@@ -217,22 +268,17 @@ const patchedFetch: typeof globalThis.fetch = async (input, init?) => {
   }
 
   if (parsed === null) {
-    return _originalFetch!(input, init);
+    return state.originalFetch(input, init);
   }
 
-  // Kick off async request-body measurement only once we know we'll record
-  // an event for this fetch. Doing this before the parsed === null guard
-  // would orphan a clone+arrayBuffer for requests we ultimately skip.
   requestBytesPromise = estimateRequestBytes(input, init);
 
   const startTime = performance.now();
-  _inFetchWrapper = true;
+  state.inFetchWrapper = true;
 
   try {
-    const response = await _originalFetch!(input, init);
+    const response = await state.originalFetch(input, init);
 
-    // Capture immutable values up-front; the deferred telemetry emit and the
-    // streaming body counter both run long after this scope returns.
     const capturedParsed = parsed;
     const capturedMethod = method;
     const capturedRequestBytesPromise = requestBytesPromise;
@@ -240,13 +286,6 @@ const patchedFetch: typeof globalThis.fetch = async (input, init?) => {
     const contentLengthHeader = response.headers.get("content-length");
     const headerBytes = contentLengthHeader != null ? (parseInt(contentLengthHeader, 10) || 0) : 0;
 
-    // Bodyless response (HEAD, 204, 304, or non-streaming nullable body):
-    // record latency now (by definition both headers- and body-time), then
-    // fire telemetry off the caller's fetch path via a deferred IIFE so the
-    // caller's `await fetch(...)` resolves immediately. The IIFE awaits the
-    // request-body measurement (which may still be in flight for cloned-
-    // Request bodies) and falls back to the content-length header for
-    // responseBytes. estimateRequestBytes never throws.
     if (response.body == null) {
       const latencyMs = performance.now() - startTime;
       void (async (): Promise<void> => {
@@ -254,7 +293,7 @@ const patchedFetch: typeof globalThis.fetch = async (input, init?) => {
           const rb = capturedRequestBytesPromise !== null
             ? await capturedRequestBytesPromise
             : 0;
-          _callback?.(buildEvent(capturedParsed, capturedMethod, status, latencyMs, rb, headerBytes));
+          state.callback?.(buildEvent(capturedParsed, capturedMethod, status, latencyMs, rb, headerBytes));
         } catch {
           // Telemetry error — swallow
         }
@@ -262,14 +301,6 @@ const patchedFetch: typeof globalThis.fetch = async (input, init?) => {
       return response;
     }
 
-    // Streaming / non-empty body: tee the body so we can count bytes
-    // independently of the caller. The caller-facing branch is returned
-    // in a cloned Response; the counting branch is drained internally
-    // and resolves telemetry at end-of-body. This guarantees telemetry
-    // fires whether the caller reads, cancels, or abandons the body.
-    // fireTelemetry awaits the request-body measurement; this only delays
-    // the eventual `_callback` invocation, not the caller's fetch resolution
-    // or response stream consumption.
     let observedBytes = 0;
     let telemetryFired = false;
     const fireTelemetry = async (statusForEvent: number): Promise<void> => {
@@ -281,7 +312,7 @@ const patchedFetch: typeof globalThis.fetch = async (input, init?) => {
           : 0;
         const latencyMs = performance.now() - startTime;
         const responseBytes = observedBytes > 0 ? observedBytes : headerBytes;
-        _callback?.(buildEvent(capturedParsed, capturedMethod, statusForEvent, latencyMs, rb, responseBytes));
+        state.callback?.(buildEvent(capturedParsed, capturedMethod, statusForEvent, latencyMs, rb, responseBytes));
       } catch {
         // Telemetry error — swallow
       }
@@ -306,10 +337,6 @@ const patchedFetch: typeof globalThis.fetch = async (input, init?) => {
 
     return new Response(forCaller, response);
   } catch (fetchError) {
-    // Fire the error event off the caller's fetch path: schedule a deferred
-    // IIFE that awaits the request-body measurement and emits telemetry, then
-    // rethrow `fetchError` immediately so the caller observes the error with
-    // no extra latency. estimateRequestBytes never throws.
     const capturedParsed = parsed;
     const capturedMethod = method;
     const capturedRequestBytesPromise = requestBytesPromise;
@@ -319,7 +346,7 @@ const patchedFetch: typeof globalThis.fetch = async (input, init?) => {
         const rb = capturedRequestBytesPromise !== null
           ? await capturedRequestBytesPromise
           : 0;
-        _callback?.(buildEvent(capturedParsed, capturedMethod, 0, latencyMs, rb, 0));
+        state.callback?.(buildEvent(capturedParsed, capturedMethod, 0, latencyMs, rb, 0));
       } catch {
         // Telemetry error — swallow
       }
@@ -327,10 +354,7 @@ const patchedFetch: typeof globalThis.fetch = async (input, init?) => {
 
     throw fetchError;
   } finally {
-    // Always reset the re-entrancy guard — a throw anywhere between
-    // the `true` assignment and here would otherwise leak it permanently
-    // and silently drop every future http.request event.
-    _inFetchWrapper = false;
+    state.inFetchWrapper = false;
   }
 };
 
@@ -347,8 +371,15 @@ function makeRequestWrapper(originalRequest: HttpRequestFn): HttpRequestFn {
     optionsOrCallback?: http.RequestOptions | ((res: http.IncomingMessage) => void),
     maybeCallback?: (res: http.IncomingMessage) => void,
   ): http.ClientRequest {
-    // Prevent double-counting when fetch delegates internally to http.request
-    if (_inFetchWrapper) {
+    const state = getState();
+
+    // Detached: pure passthrough.
+    if (state.callback === null) {
+      // @ts-expect-error forwarding original overloaded signature
+      return originalRequest(urlOrOptions, optionsOrCallback, maybeCallback);
+    }
+
+    if (state.inFetchWrapper) {
       // @ts-expect-error forwarding original overloaded signature
       return originalRequest(urlOrOptions, optionsOrCallback, maybeCallback);
     }
@@ -358,11 +389,6 @@ function makeRequestWrapper(originalRequest: HttpRequestFn): HttpRequestFn {
     let requestBytes = 0;
 
     try {
-      // When the first arg is a URL or URL-like string, an options.path on the
-      // second arg overrides the URL's pathname (matching Node's actual request
-      // routing). When the first arg is RequestOptions itself, the path inside
-      // it is already consumed by extractUrl's RequestOptions branch — no
-      // override needed (and applying one would be a no-op anyway).
       const firstArgIsUrlish =
         typeof urlOrOptions === "string" || urlOrOptions instanceof URL;
       const secondArgPath: string | undefined =
@@ -420,10 +446,6 @@ function makeRequestWrapper(originalRequest: HttpRequestFn): HttpRequestFn {
           const contentLength = res.headers["content-length"];
           const headerBytes = contentLength != null ? (parseInt(contentLength, 10) || 0) : 0;
 
-          // Accumulate observed bytes for chunked / no-content-length
-          // responses. We do not consume data: IncomingMessage is a
-          // multi-listener EventEmitter, so this listener runs alongside
-          // the caller's listener with no effect on what the caller sees.
           let observedBytes = 0;
           res.on("data", (chunk: Buffer | string) => {
             try {
@@ -439,7 +461,7 @@ function makeRequestWrapper(originalRequest: HttpRequestFn): HttpRequestFn {
             try {
               const latencyMs = performance.now() - startTime;
               const responseBytes = observedBytes > 0 ? observedBytes : headerBytes;
-              _callback?.(buildEvent(capturedParsed, capturedMethod, statusCode, latencyMs, capturedRequestBytes, responseBytes));
+              state.callback?.(buildEvent(capturedParsed, capturedMethod, statusCode, latencyMs, capturedRequestBytes, responseBytes));
             } catch {
               // Swallow
             }
@@ -452,7 +474,7 @@ function makeRequestWrapper(originalRequest: HttpRequestFn): HttpRequestFn {
       req.once("error", () => {
         try {
           const latencyMs = performance.now() - startTime;
-          _callback?.(buildEvent(capturedParsed, capturedMethod, 0, latencyMs, capturedRequestBytes, 0));
+          state.callback?.(buildEvent(capturedParsed, capturedMethod, 0, latencyMs, capturedRequestBytes, 0));
         } catch {
           // Swallow
         }
@@ -489,63 +511,83 @@ function makeGetWrapper(patchedRequest: HttpRequestFn): HttpGetFn {
 /**
  * Installs patches on globalThis.fetch, http.request, https.request,
  * http.get, and https.get. No-op if already installed.
+ *
+ * (Task 3 retains the original "no-op if installed" semantics; Task 4 adds
+ * the typed-error signal and dual-package coordination.)
  */
 export function install(callback: EventCallback): void {
-  if (_installed) return;
+  const state = getState();
+  if (state.installed) return;
 
-  _callback = callback;
+  state.callback = callback;
 
-  _originalFetch = globalThis.fetch;
-  _originalHttpRequest = http.request;
-  _originalHttpGet = http.get;
-  _originalHttpsRequest = https.request;
-  _originalHttpsGet = https.get;
+  state.originalFetch = globalThis.fetch;
+  state.originalHttpRequest = http.request;
+  state.originalHttpGet = http.get;
+  state.originalHttpsRequest = https.request;
+  state.originalHttpsGet = https.get;
 
+  state.patchedFetch = patchedFetch;
   globalThis.fetch = patchedFetch;
 
-  const patchedHttpRequest = makeRequestWrapper(_originalHttpRequest);
-  const patchedHttpsRequest = makeRequestWrapper(_originalHttpsRequest);
+  const patchedHttpRequest = makeRequestWrapper(state.originalHttpRequest);
+  const patchedHttpsRequest = makeRequestWrapper(state.originalHttpsRequest);
+  const patchedHttpGet = makeGetWrapper(patchedHttpRequest);
+  const patchedHttpsGet = makeGetWrapper(patchedHttpsRequest);
+
+  state.patchedHttpRequest = patchedHttpRequest;
+  state.patchedHttpsRequest = patchedHttpsRequest;
+  state.patchedHttpGet = patchedHttpGet;
+  state.patchedHttpsGet = patchedHttpsGet;
 
   (http as unknown as { request: HttpRequestFn }).request = patchedHttpRequest;
-  (http as unknown as { get: HttpGetFn }).get = makeGetWrapper(patchedHttpRequest);
+  (http as unknown as { get: HttpGetFn }).get = patchedHttpGet;
   (https as unknown as { request: HttpRequestFn }).request = patchedHttpsRequest;
-  (https as unknown as { get: HttpGetFn }).get = makeGetWrapper(patchedHttpsRequest);
+  (https as unknown as { get: HttpGetFn }).get = patchedHttpsGet;
 
-  _installed = true;
+  state.installed = true;
 }
 
 /**
  * Restores all patched functions to their originals. No-op if not installed.
+ *
+ * (Task 3 retains blind-restore semantics; Task 5 adds the per-binding
+ * identity check + typed-error signal for third-party wrappers.)
  */
 export function uninstall(): void {
-  if (!_installed) return;
+  const state = getState();
+  if (!state.installed) return;
 
-  if (_originalFetch != null) globalThis.fetch = _originalFetch;
-  if (_originalHttpRequest != null) (http as unknown as { request: HttpRequestFn }).request = _originalHttpRequest;
-  if (_originalHttpGet != null) (http as unknown as { get: HttpGetFn }).get = _originalHttpGet;
-  if (_originalHttpsRequest != null) (https as unknown as { request: HttpRequestFn }).request = _originalHttpsRequest;
-  if (_originalHttpsGet != null) (https as unknown as { get: HttpGetFn }).get = _originalHttpsGet;
+  if (state.originalFetch != null) globalThis.fetch = state.originalFetch;
+  if (state.originalHttpRequest != null) (http as unknown as { request: HttpRequestFn }).request = state.originalHttpRequest;
+  if (state.originalHttpGet != null) (http as unknown as { get: HttpGetFn }).get = state.originalHttpGet;
+  if (state.originalHttpsRequest != null) (https as unknown as { request: HttpRequestFn }).request = state.originalHttpsRequest;
+  if (state.originalHttpsGet != null) (https as unknown as { get: HttpGetFn }).get = state.originalHttpsGet;
 
-  _callback = null;
-  _originalFetch = null;
-  _originalHttpRequest = null;
-  _originalHttpGet = null;
-  _originalHttpsRequest = null;
-  _originalHttpsGet = null;
-  _inFetchWrapper = false;
-  _installed = false;
+  state.callback = null;
+  state.originalFetch = null;
+  state.originalHttpRequest = null;
+  state.originalHttpGet = null;
+  state.originalHttpsRequest = null;
+  state.originalHttpsGet = null;
+  state.patchedFetch = null;
+  state.patchedHttpRequest = null;
+  state.patchedHttpGet = null;
+  state.patchedHttpsRequest = null;
+  state.patchedHttpsGet = null;
+  state.inFetchWrapper = false;
+  state.installed = false;
 }
 
 /** Returns true if patches are currently active. */
 export function isInstalled(): boolean {
-  return _installed;
+  return getState().installed;
 }
-
 
 /**
  * Returns the original, unpatched fetch for internal SDK use (e.g. transport).
  * Falls back to globalThis.fetch if called before install().
  */
 export function getRawFetch(): typeof globalThis.fetch {
-  return _originalFetch ?? globalThis.fetch;
+  return getState().originalFetch ?? globalThis.fetch;
 }
