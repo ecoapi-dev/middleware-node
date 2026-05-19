@@ -19,6 +19,7 @@
     "dist"
   ],
   "scripts": {
+    "prebuild": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "tsup",
     "build:types": "tsc --emitDeclarationOnly --outDir dist/types",
     "dev": "tsup --watch",
