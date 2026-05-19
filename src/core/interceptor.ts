@@ -599,6 +599,7 @@ export function uninstall(): void {
   if (state.originalHttpsGet != null) (https as unknown as { get: HttpGetFn }).get = state.originalHttpsGet;
 
   state.callback = null;
+  state.onError = null;
   state.originalFetch = null;
   state.originalHttpRequest = null;
   state.originalHttpGet = null;

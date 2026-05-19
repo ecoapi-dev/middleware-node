@@ -956,10 +956,12 @@ describe("interceptor — dual-package state (#11.1)", () => {
     const errors: Error[] = [];
     setOnError((e) => errors.push(e));
     install(() => {});
+    const firstPatched = globalThis.fetch;
     setOnError(null);
 
-    install(() => {}); // second install — should not fire any callback
+    install(() => {}); // second install — should be a silent no-op
     expect(errors).toHaveLength(0);
+    expect(globalThis.fetch).toBe(firstPatched); // not re-wrapped
   });
 
   it("after a clean uninstall, install() succeeds again with no error fired", async () => {
