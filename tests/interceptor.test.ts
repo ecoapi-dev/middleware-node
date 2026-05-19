@@ -6,7 +6,8 @@
  */
 
 import http from "node:http";
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import https from "node:https";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import {
   install,
   uninstall,
@@ -870,5 +871,268 @@ describe("http.request end-of-body latency and chunked bytes", () => {
 
     expect(events).toHaveLength(1);
     expect(events[0]!.responseBytes).toBe(Buffer.byteLength("alphaomega"));
+  });
+});
+
+describe("interceptor — globalThis-keyed state (#11.1)", () => {
+  const STATE_KEY = Symbol.for("@recost-dev/node:interceptor-state");
+
+  beforeAll(() => {
+    // Hermetic baseline: vitest workers can carry state across test files
+    // once any prior install() has lazily populated globalThis[STATE_KEY].
+    // Wipe it so the pre-install assertion below is meaningful.
+    delete (globalThis as Record<symbol, unknown>)[STATE_KEY];
+  });
+
+  afterEach(() => {
+    uninstall();
+  });
+
+  it("install() populates globalThis[STATE_KEY] with installed=true and saved originals", () => {
+    expect((globalThis as Record<symbol, unknown>)[STATE_KEY]).toBeUndefined();
+
+    const events: RawEvent[] = [];
+    install((e) => events.push(e));
+
+    const state = (globalThis as Record<symbol, unknown>)[STATE_KEY] as
+      | { installed: boolean; originalFetch: unknown; patchedFetch: unknown }
+      | undefined;
+
+    expect(state).toBeDefined();
+    expect(state!.installed).toBe(true);
+    expect(state!.originalFetch).toBeTypeOf("function");
+    expect(state!.patchedFetch).toBeTypeOf("function");
+    expect(globalThis.fetch).toBe(state!.patchedFetch);
+  });
+});
+
+describe("interceptor — dual-package state (#11.1)", () => {
+  afterEach(() => {
+    uninstall();
+  });
+
+  it("second install() fires RecostInterceptorAlreadyInstalledError and is a no-op", async () => {
+    const { setOnError } = await import("../src/core/interceptor.js");
+    const { RecostInterceptorAlreadyInstalledError } = await import("../src/core/types.js");
+
+    const errors: Error[] = [];
+    setOnError((e) => errors.push(e));
+
+    const eventsFirst: RawEvent[] = [];
+    const eventsSecond: RawEvent[] = [];
+
+    install((e) => eventsFirst.push(e));
+    const firstPatched = globalThis.fetch;
+
+    install((e) => eventsSecond.push(e));
+    const afterSecondPatched = globalThis.fetch;
+
+    expect(afterSecondPatched).toBe(firstPatched); // not re-wrapped
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(RecostInterceptorAlreadyInstalledError);
+  });
+
+  it("after a no-op second install, only the first callback fires", async () => {
+    const server = await startServer((_req, res) => {
+      res.end("ok");
+    });
+    try {
+      const eventsFirst: RawEvent[] = [];
+      const eventsSecond: RawEvent[] = [];
+      install((e) => eventsFirst.push(e));
+      install((e) => eventsSecond.push(e)); // no-op
+
+      await fetch(`${server.baseUrl}/x`);
+      await flushDeferred();
+
+      expect(eventsFirst).toHaveLength(1);
+      expect(eventsSecond).toHaveLength(0);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("setOnError(null) clears the registered error handler", async () => {
+    const { setOnError } = await import("../src/core/interceptor.js");
+    const errors: Error[] = [];
+    setOnError((e) => errors.push(e));
+    install(() => {});
+    const firstPatched = globalThis.fetch;
+    setOnError(null);
+
+    install(() => {}); // second install — should be a silent no-op
+    expect(errors).toHaveLength(0);
+    expect(globalThis.fetch).toBe(firstPatched); // not re-wrapped
+  });
+
+  it("after a clean uninstall, install() succeeds again with no error fired", async () => {
+    const { setOnError } = await import("../src/core/interceptor.js");
+    const errors: Error[] = [];
+    setOnError((e) => errors.push(e));
+
+    install(() => {});
+    uninstall();
+    install(() => {}); // clean re-install
+    expect(errors).toHaveLength(0);
+    expect(isInstalled()).toBe(true);
+  });
+});
+
+describe("interceptor — uninstall identity check (#11.2)", () => {
+  afterEach(() => {
+    // Best-effort cleanup: a conflict-uninstall in the test body may have
+    // left third-party wrappers on one or more bindings AND kept state in
+    // installed=true mode. Restore every binding we can identify from the
+    // saved originals on state, then nuke the singleton state entirely
+    // so the next test sees a clean slate. We don't call uninstall() here
+    // because re-running it would re-fire conflict errors for any binding
+    // still wrapped by a third party.
+    const STATE_KEY = Symbol.for("@recost-dev/node:interceptor-state");
+    const s = (globalThis as Record<symbol, unknown>)[STATE_KEY] as
+      | {
+          originalFetch?: typeof globalThis.fetch | null;
+          originalHttpRequest?: typeof http.request | null;
+          originalHttpGet?: typeof http.get | null;
+          originalHttpsRequest?: typeof https.request | null;
+          originalHttpsGet?: typeof https.get | null;
+          installed?: boolean;
+        }
+      | undefined;
+
+    if (s?.installed) {
+      if (s.originalFetch) globalThis.fetch = s.originalFetch;
+      if (s.originalHttpRequest) {
+        (http as unknown as { request: typeof http.request }).request = s.originalHttpRequest;
+      }
+      if (s.originalHttpGet) {
+        (http as unknown as { get: typeof http.get }).get = s.originalHttpGet;
+      }
+      if (s.originalHttpsRequest) {
+        (https as unknown as { request: typeof https.request }).request = s.originalHttpsRequest;
+      }
+      if (s.originalHttpsGet) {
+        (https as unknown as { get: typeof https.get }).get = s.originalHttpsGet;
+      }
+      delete (globalThis as Record<symbol, unknown>)[STATE_KEY];
+    } else {
+      uninstall();
+    }
+  });
+
+  it("third-party wrap of fetch causes uninstall to fire PatchOverwrittenError and leave fetch alone", async () => {
+    const { setOnError } = await import("../src/core/interceptor.js");
+    const { RecostInterceptorPatchOverwrittenError } = await import("../src/core/types.js");
+
+    const errors: Error[] = [];
+    setOnError((e) => errors.push(e));
+    install(() => {});
+
+    const ourPatched = globalThis.fetch;
+    const thirdPartyWrapper: typeof globalThis.fetch = (input, init) =>
+      ourPatched(input, init);
+    globalThis.fetch = thirdPartyWrapper;
+
+    uninstall();
+
+    expect(globalThis.fetch).toBe(thirdPartyWrapper); // not clobbered
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(RecostInterceptorPatchOverwrittenError);
+    expect(
+      (errors[0] as InstanceType<typeof RecostInterceptorPatchOverwrittenError>).skippedBindings,
+    ).toEqual(["fetch"]);
+  });
+
+  it("uninstall restores http.request even when fetch was wrapped by a third party", async () => {
+    const { setOnError } = await import("../src/core/interceptor.js");
+    setOnError(() => {});
+
+    const originalHttpRequest = http.request;
+    install(() => {});
+    const ourPatchedFetch = globalThis.fetch;
+    const thirdPartyWrapper: typeof globalThis.fetch = (input, init) =>
+      ourPatchedFetch(input, init);
+    globalThis.fetch = thirdPartyWrapper;
+
+    uninstall();
+
+    // http.request was NOT wrapped by a third party, so it should be restored
+    expect(http.request).toBe(originalHttpRequest);
+    // globalThis.fetch WAS wrapped, so it must be left alone
+    expect(globalThis.fetch).toBe(thirdPartyWrapper);
+  });
+
+  it("after a conflict-uninstall, our patched fetch (still in the chain) is a pure passthrough", async () => {
+    const { setOnError } = await import("../src/core/interceptor.js");
+    setOnError(() => {});
+
+    const events: RawEvent[] = [];
+    install((e) => events.push(e));
+
+    const ourPatched = globalThis.fetch;
+    globalThis.fetch = (input, init) => ourPatched(input, init); // wrap on top
+    uninstall();
+
+    const server = await startServer((_req, res) => res.end("x"));
+    try {
+      // The third-party wrapper still calls ourPatched, which after uninstall
+      // sees state.callback === null and falls through to state.originalFetch.
+      // No event should be recorded.
+      await fetch(`${server.baseUrl}/x`);
+      await flushDeferred();
+      expect(events).toHaveLength(0);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("no third-party wrap = clean uninstall, no error fired", async () => {
+    const { setOnError } = await import("../src/core/interceptor.js");
+    const errors: Error[] = [];
+    setOnError((e) => errors.push(e));
+    install(() => {});
+    uninstall();
+    expect(errors).toHaveLength(0);
+  });
+
+  it("re-init after a conflict-uninstall fires AlreadyInstalledError and is a no-op", async () => {
+    const { setOnError } = await import("../src/core/interceptor.js");
+    const { RecostInterceptorAlreadyInstalledError } = await import("../src/core/types.js");
+    const errors: Error[] = [];
+    setOnError((e) => errors.push(e));
+
+    install(() => {});
+    const ourPatched = globalThis.fetch;
+    globalThis.fetch = (input, init) => ourPatched(input, init); // wrap on top
+    uninstall(); // fires PatchOverwrittenError
+
+    install(() => {}); // attempted re-install
+    expect(errors).toHaveLength(2);
+    expect(errors[1]).toBeInstanceOf(RecostInterceptorAlreadyInstalledError);
+  });
+});
+
+describe("interceptor — typed errors (#11)", () => {
+  it("RecostInterceptorAlreadyInstalledError extends RecostError and is named correctly", async () => {
+    const { RecostError, RecostInterceptorAlreadyInstalledError } = await import(
+      "../src/core/types.js"
+    );
+    const err = new RecostInterceptorAlreadyInstalledError();
+    expect(err).toBeInstanceOf(Error);
+    expect(err).toBeInstanceOf(RecostError);
+    expect(err.name).toBe("RecostInterceptorAlreadyInstalledError");
+    expect(err.message).toMatch(/installed twice/i);
+  });
+
+  it("RecostInterceptorPatchOverwrittenError exposes skippedBindings and an informative message", async () => {
+    const { RecostError, RecostInterceptorPatchOverwrittenError } = await import(
+      "../src/core/types.js"
+    );
+    const err = new RecostInterceptorPatchOverwrittenError(["fetch", "http.request"]);
+    expect(err).toBeInstanceOf(RecostError);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe("RecostInterceptorPatchOverwrittenError");
+    expect(err.skippedBindings).toEqual(["fetch", "http.request"]);
+    expect(err.message).toContain("fetch");
+    expect(err.message).toContain("http.request");
   });
 });

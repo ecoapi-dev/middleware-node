@@ -149,18 +149,29 @@ Recovery is restart-only: start the VS Code extension, then restart your host pr
 Hosts can route local-unreachable separately from auth failures by narrowing on the error class:
 
 ```ts
-import { init, RecostAuthError, RecostFatalAuthError, RecostLocalUnreachableError } from "@recost-dev/node";
+import {
+  init,
+  RecostAuthError,
+  RecostFatalAuthError,
+  RecostLocalUnreachableError,
+  RecostInterceptorAlreadyInstalledError,
+  RecostInterceptorPatchOverwrittenError,
+} from "@recost-dev/node";
 
 init({
-  // No apiKey — local mode.
+  apiKey: process.env.RECOST_API_KEY,
+  projectId: process.env.RECOST_PROJECT_ID,
   onError(err) {
     if (err instanceof RecostLocalUnreachableError) log.warn("recost: local extension unreachable; check VS Code");
     else if (err instanceof RecostFatalAuthError) pagerduty.fire(err);
     else if (err instanceof RecostAuthError) log.warn(err);
-    else log.debug(err);
+    else if (err instanceof RecostInterceptorAlreadyInstalledError) log.warn("recost: duplicate package load — first install is active");
+    else if (err instanceof RecostInterceptorPatchOverwrittenError) log.warn(`recost: third-party wrapper detected on ${err.skippedBindings.join(", ")} — restart to recover`);
   },
 });
 ```
+
+These two interceptor errors are advisory: the SDK either keeps the first install active (`AlreadyInstalled`) or detaches the callback and refuses re-install (`PatchOverwritten`). Recovery from `PatchOverwritten` requires a process restart with the conflicting library either removed or installed before recost.
 
 ### Custom providers
 
@@ -191,14 +202,39 @@ So a custom catch-all (`{ hostPattern: "api.openai.com", provider: "openai-mock"
 
 ### Cleanup / teardown
 
-`init()` returns a handle with a `dispose()` method that stops the interceptor, cancels the flush timer, and closes the transport connection. Useful in tests or when you want to reinitialize with different config.
+`init()` returns a handle with two lifecycle methods:
+
+- **`dispose(): Promise<void>`** — stop intercepting, perform one final shutdown flush (bounded by `shutdownFlushTimeoutMs`), close the transport. Calling this twice is a no-op.
+- **`flush(): Promise<void>`** — flush the current aggregator window *without* disposing. Useful before a known process-exit boundary where `dispose()` doesn't fit your shutdown ordering. After `dispose()` has run, `flush()` resolves immediately.
+
+Both methods route flush errors through your configured `onError`; they never reject.
 
 ```ts
-const recost = init({ apiKey: process.env.RECOST_API_KEY });
+const recost = init({ … });
 
-// Later — e.g. in a test afterAll() or process shutdown handler:
-recost.dispose();
+// Manual checkpoint flush before a non-graceful exit:
+await recost.flush();
+
+// Graceful shutdown:
+await recost.dispose();
 ```
+
+**Cross-SDK parity.** The Python SDK's `dispose()` is synchronous (returns immediately after spawning a flush thread); its `flush_blocking(timeout_s=…)` blocks the calling thread until the flush completes. Node's `await handle.dispose()` already provides blocking semantics, and `await handle.flush()` is the direct parallel of Python's `flush_blocking()`. There is no thread-blocking primitive in JavaScript, so the awaited promise is the only honest analogue.
+
+### Worker threads
+
+`init()` patches `fetch`, `http`, and `https` for the worker that calls it. Workers spawned via `node:worker_threads` get their own module instances and their own `globalThis`, so they will not be instrumented until you call `init()` inside the worker's own entry point. SDK errors thrown in a worker route through that worker's own `onError`.
+
+```ts
+// In worker.ts (the worker entry point)
+import { init } from "@recost-dev/node";
+
+init({ apiKey: process.env.RECOST_API_KEY });
+
+// …rest of worker logic…
+```
+
+The main thread's `init()` does not propagate to workers, and the SDK does not detect or warn about worker spawns — instrumenting workers is the host's responsibility.
 
 ### Disabling in tests
 

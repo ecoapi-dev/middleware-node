@@ -80,7 +80,9 @@ Both touch `WindowSummary` serialization. Coordinate Python + Node together so n
 
 ## Wave 4 — Provider registry overhaul
 
-**Status:** in-progress
+**Status:** done
+
+**Merged PR:** https://github.com/recost-dev/middleware-node/pull/38
 
 **Plan:** `plans/2026-05-15-provider-registry-overhaul.md`
 
@@ -101,7 +103,11 @@ Both touch `WindowSummary` serialization. Coordinate Python + Node together so n
 
 ## Wave 5 — Architectural / lifecycle (riskiest, save for last)
 
-**Status:** pending
+**Status:** in-progress
+
+**Spec:** `specs/2026-05-18-multi-realm-and-dispose-parity-design.md`
+
+**Plan:** `plans/2026-05-18-multi-realm-and-dispose-parity.md`
 
 **Theme:** Larger-scope changes that touch the patch model (`init.ts` install/uninstall, interceptor patching strategy) and shutdown semantics. Defer until Waves 1–4 land so the small fixes don't collide with the rewrite.
 
@@ -112,7 +118,7 @@ Both touch `WindowSummary` serialization. Coordinate Python + Node together so n
 | [#11](https://github.com/recost-dev/middleware-node/issues/11) | Multi-realm: workers, dual-package hazard, third-party patch interaction | `src/core/interceptor.ts`, `src/init.ts`, README |
 | [#19](https://github.com/recost-dev/middleware-node/issues/19) | Python sync vs Node async `dispose()` parity (Node may need `flushBlocking()`) | `src/init.ts` (this repo), Python side bigger |
 
-**Recommended PR shape:** two plans, two PRs. #11 alone is a substantial design effort with 3 sub-problems (workers / dual-package / third-party patches); each could even be its own PR.
+**PR shape (actual):** one plan, one PR. #19's Node-side change is small (one new `RecostHandle.flush()` method plus README parity note), so it rides with #11 in a single bundled PR per the wave-execution convention. The Python-side parity work tracks separately in `recost-dev/middleware-python`.
 
 ---
 

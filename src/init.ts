@@ -5,7 +5,7 @@
 
 import type { FlushStatus, RecostConfig } from "./core/types.js";
 import { ProviderRegistry } from "./core/provider-registry.js";
-import { install, uninstall } from "./core/interceptor.js";
+import { install, setOnError, uninstall } from "./core/interceptor.js";
 import { Aggregator, MAX_BUCKETS } from "./core/aggregator.js";
 import { Transport } from "./core/transport.js";
 import { validateConfig } from "./core/validate-config.js";
@@ -24,6 +24,22 @@ export interface RecostHandle {
    * cut off when the process exits.
    */
   dispose(): Promise<void>;
+
+  /**
+   * Flush the current aggregator window without disposing. Resolves when the
+   * flush completes; never rejects — errors route through the configured
+   * `onError` callback (or are swallowed silently if none is configured).
+   *
+   * Useful before a known process-exit boundary on platforms where
+   * `dispose()` doesn't fit your shutdown ordering. After `dispose()` has
+   * run, `flush()` resolves immediately as a no-op.
+   *
+   * Cross-SDK parity: equivalent to the Python SDK's `flush_blocking()`. JS
+   * has no thread-blocking primitive, so the Node parallel is the awaited
+   * promise. See the README "Cleanup / teardown" section.
+   */
+  flush(): Promise<void>;
+
   /** Outcome of the most recent flush, or null if no flush has completed yet. */
   readonly lastFlushStatus: FlushStatus | null;
 }
@@ -48,7 +64,7 @@ export function init(config: RecostConfig = {}): RecostHandle {
 
   const enabled = config.enabled ?? true;
   if (!enabled) {
-    const noop: RecostHandle = { dispose: async () => {}, lastFlushStatus: null };
+    const noop: RecostHandle = { dispose: async () => {}, flush: async () => {}, lastFlushStatus: null };
     _handle = noop;
     return noop;
   }
@@ -91,6 +107,17 @@ export function init(config: RecostConfig = {}): RecostHandle {
     await transport.send(summary);
   };
 
+  const reportFlushError = (err: unknown): void => {
+    const error = err instanceof Error ? err : new Error(String(err));
+    if (config.onError) config.onError(error);
+    else if (debug) console.error("[recost] flush error:", error.message);
+  };
+
+  // Route advisory interceptor errors (dual-package detection, uninstall
+  // conflicts) through the user's onError. setOnError(null) is called by
+  // dispose() implicitly via uninstall() resetting the state.
+  setOnError(config.onError ?? null);
+
   install((event) => {
     // Drop excluded URLs
     if (excludePatterns.some((p) => event.url.includes(p) || event.host.includes(p))) return;
@@ -111,22 +138,14 @@ export function init(config: RecostConfig = {}): RecostHandle {
     // If this event would push us past the bucket cap, flush the current
     // window first so it's preserved, then ingest into a fresh window.
     if (aggregator.wouldOverflow(event)) {
-      flushAndSend().catch((err: unknown) => {
-        const error = err instanceof Error ? err : new Error(String(err));
-        if (config.onError) config.onError(error);
-        else if (debug) console.error("[recost] flush error:", error.message);
-      });
+      flushAndSend().catch(reportFlushError);
     }
 
     aggregator.ingest(event, match?.costPerRequestCents ?? 0);
 
     // Trigger an early flush if the batch size threshold is reached
     if (aggregator.size >= maxBatchSize) {
-      flushAndSend().catch((err: unknown) => {
-        const error = err instanceof Error ? err : new Error(String(err));
-        if (config.onError) config.onError(error);
-        else if (debug) console.error("[recost] flush error:", error.message);
-      });
+      flushAndSend().catch(reportFlushError);
     }
   });
 
@@ -135,15 +154,9 @@ export function init(config: RecostConfig = {}): RecostHandle {
     // escaping the interval callback — otherwise the interval dies silently
     // for the rest of the process lifetime.
     try {
-      flushAndSend().catch((err: unknown) => {
-        const error = err instanceof Error ? err : new Error(String(err));
-        if (config.onError) config.onError(error);
-        else if (debug) console.error("[recost] flush error:", error.message);
-      });
+      flushAndSend().catch(reportFlushError);
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      if (config.onError) config.onError(error);
-      else if (debug) console.error("[recost] flush error:", error.message);
+      reportFlushError(err);
     }
   }, config.flushIntervalMs ?? 30_000);
 
@@ -165,20 +178,29 @@ export function init(config: RecostConfig = {}): RecostHandle {
 
       // One final flush, bounded by shutdownFlushTimeoutMs. Without this the
       // window in progress at dispose time would be silently dropped — exactly
-      // the data users care most about during graceful shutdown. We swallow
-      // any flush error here because dispose() is documented as never
-      // rejecting; errors still go through onError via flushAndSend's catch.
+      // the data users care most about during graceful shutdown. Errors route
+      // through onError so dispose() itself never rejects.
       try {
         await Promise.race([
           flushAndSend(),
           new Promise<void>((resolve) => setTimeout(resolve, shutdownFlushTimeoutMs)),
         ]);
-      } catch {
-        // flushAndSend already routes errors through onError
+      } catch (err) {
+        reportFlushError(err);
       }
 
       transport.dispose();
       if (_handle === handle) _handle = null;
+    },
+    async flush(): Promise<void> {
+      // No-op after dispose. Idempotent and safe to call from a final-exit
+      // handler that also calls dispose() — order doesn't matter.
+      if (disposed) return;
+      try {
+        await flushAndSend();
+      } catch (err) {
+        reportFlushError(err);
+      }
     },
     get lastFlushStatus(): FlushStatus | null {
       return transport.lastFlushStatus;
