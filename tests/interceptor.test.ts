@@ -891,6 +891,7 @@ describe("interceptor — typed errors (#11)", () => {
     );
     const err = new RecostInterceptorPatchOverwrittenError(["fetch", "http.request"]);
     expect(err).toBeInstanceOf(RecostError);
+    expect(err).toBeInstanceOf(Error);
     expect(err.name).toBe("RecostInterceptorPatchOverwrittenError");
     expect(err.skippedBindings).toEqual(["fetch", "http.request"]);
     expect(err.message).toContain("fetch");
