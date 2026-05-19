@@ -107,6 +107,12 @@ export function init(config: RecostConfig = {}): RecostHandle {
     await transport.send(summary);
   };
 
+  const reportFlushError = (err: unknown): void => {
+    const error = err instanceof Error ? err : new Error(String(err));
+    if (config.onError) config.onError(error);
+    else if (debug) console.error("[recost] flush error:", error.message);
+  };
+
   // Route advisory interceptor errors (dual-package detection, uninstall
   // conflicts) through the user's onError. setOnError(null) is called by
   // dispose() implicitly via uninstall() resetting the state.
@@ -132,22 +138,14 @@ export function init(config: RecostConfig = {}): RecostHandle {
     // If this event would push us past the bucket cap, flush the current
     // window first so it's preserved, then ingest into a fresh window.
     if (aggregator.wouldOverflow(event)) {
-      flushAndSend().catch((err: unknown) => {
-        const error = err instanceof Error ? err : new Error(String(err));
-        if (config.onError) config.onError(error);
-        else if (debug) console.error("[recost] flush error:", error.message);
-      });
+      flushAndSend().catch(reportFlushError);
     }
 
     aggregator.ingest(event, match?.costPerRequestCents ?? 0);
 
     // Trigger an early flush if the batch size threshold is reached
     if (aggregator.size >= maxBatchSize) {
-      flushAndSend().catch((err: unknown) => {
-        const error = err instanceof Error ? err : new Error(String(err));
-        if (config.onError) config.onError(error);
-        else if (debug) console.error("[recost] flush error:", error.message);
-      });
+      flushAndSend().catch(reportFlushError);
     }
   });
 
@@ -156,15 +154,9 @@ export function init(config: RecostConfig = {}): RecostHandle {
     // escaping the interval callback — otherwise the interval dies silently
     // for the rest of the process lifetime.
     try {
-      flushAndSend().catch((err: unknown) => {
-        const error = err instanceof Error ? err : new Error(String(err));
-        if (config.onError) config.onError(error);
-        else if (debug) console.error("[recost] flush error:", error.message);
-      });
+      flushAndSend().catch(reportFlushError);
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      if (config.onError) config.onError(error);
-      else if (debug) console.error("[recost] flush error:", error.message);
+      reportFlushError(err);
     }
   }, config.flushIntervalMs ?? 30_000);
 
@@ -186,16 +178,15 @@ export function init(config: RecostConfig = {}): RecostHandle {
 
       // One final flush, bounded by shutdownFlushTimeoutMs. Without this the
       // window in progress at dispose time would be silently dropped — exactly
-      // the data users care most about during graceful shutdown. We swallow
-      // any flush error here because dispose() is documented as never
-      // rejecting; errors still go through onError via flushAndSend's catch.
+      // the data users care most about during graceful shutdown. Errors route
+      // through onError so dispose() itself never rejects.
       try {
         await Promise.race([
           flushAndSend(),
           new Promise<void>((resolve) => setTimeout(resolve, shutdownFlushTimeoutMs)),
         ]);
-      } catch {
-        // flushAndSend already routes errors through onError
+      } catch (err) {
+        reportFlushError(err);
       }
 
       transport.dispose();
@@ -207,8 +198,8 @@ export function init(config: RecostConfig = {}): RecostHandle {
       if (disposed) return;
       try {
         await flushAndSend();
-      } catch {
-        // flushAndSend already routes errors through onError
+      } catch (err) {
+        reportFlushError(err);
       }
     },
     get lastFlushStatus(): FlushStatus | null {

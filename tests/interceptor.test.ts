@@ -6,6 +6,7 @@
  */
 
 import http from "node:http";
+import https from "node:https";
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import {
   install,
@@ -986,14 +987,14 @@ describe("interceptor — uninstall identity check (#11.2)", () => {
     // so the next test sees a clean slate. We don't call uninstall() here
     // because re-running it would re-fire conflict errors for any binding
     // still wrapped by a third party.
-    // Note: https bindings are not restored here because `https` is not
-    // imported in this file; those state fields will always be null/undefined.
     const STATE_KEY = Symbol.for("@recost-dev/node:interceptor-state");
     const s = (globalThis as Record<symbol, unknown>)[STATE_KEY] as
       | {
           originalFetch?: typeof globalThis.fetch | null;
           originalHttpRequest?: typeof http.request | null;
           originalHttpGet?: typeof http.get | null;
+          originalHttpsRequest?: typeof https.request | null;
+          originalHttpsGet?: typeof https.get | null;
           installed?: boolean;
         }
       | undefined;
@@ -1005,6 +1006,12 @@ describe("interceptor — uninstall identity check (#11.2)", () => {
       }
       if (s.originalHttpGet) {
         (http as unknown as { get: typeof http.get }).get = s.originalHttpGet;
+      }
+      if (s.originalHttpsRequest) {
+        (https as unknown as { request: typeof https.request }).request = s.originalHttpsRequest;
+      }
+      if (s.originalHttpsGet) {
+        (https as unknown as { get: typeof https.get }).get = s.originalHttpsGet;
       }
       delete (globalThis as Record<symbol, unknown>)[STATE_KEY];
     } else {
