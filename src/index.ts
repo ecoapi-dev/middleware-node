@@ -20,7 +20,11 @@ export {
   RecostAuthError,
   RecostFatalAuthError,
   RecostLocalUnreachableError,
+  RecostInterceptorAlreadyInstalledError,
+  RecostInterceptorPatchOverwrittenError,
 } from "./core/types.js";
+
+export type { InterceptorBinding } from "./core/types.js";
 
 // Top-level init
 export { init } from "./init.js";

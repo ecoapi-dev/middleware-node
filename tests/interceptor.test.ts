@@ -872,3 +872,28 @@ describe("http.request end-of-body latency and chunked bytes", () => {
     expect(events[0]!.responseBytes).toBe(Buffer.byteLength("alphaomega"));
   });
 });
+
+describe("interceptor — typed errors (#11)", () => {
+  it("RecostInterceptorAlreadyInstalledError extends RecostError and is named correctly", async () => {
+    const { RecostError, RecostInterceptorAlreadyInstalledError } = await import(
+      "../src/core/types.js"
+    );
+    const err = new RecostInterceptorAlreadyInstalledError();
+    expect(err).toBeInstanceOf(Error);
+    expect(err).toBeInstanceOf(RecostError);
+    expect(err.name).toBe("RecostInterceptorAlreadyInstalledError");
+    expect(err.message).toMatch(/installed twice/i);
+  });
+
+  it("RecostInterceptorPatchOverwrittenError exposes skippedBindings and an informative message", async () => {
+    const { RecostError, RecostInterceptorPatchOverwrittenError } = await import(
+      "../src/core/types.js"
+    );
+    const err = new RecostInterceptorPatchOverwrittenError(["fetch", "http.request"]);
+    expect(err).toBeInstanceOf(RecostError);
+    expect(err.name).toBe("RecostInterceptorPatchOverwrittenError");
+    expect(err.skippedBindings).toEqual(["fetch", "http.request"]);
+    expect(err.message).toContain("fetch");
+    expect(err.message).toContain("http.request");
+  });
+});

@@ -270,3 +270,55 @@ export class RecostLocalUnreachableError extends RecostError {
     this.consecutiveFailures = consecutiveFailures;
   }
 }
+
+/**
+ * A second `install()` was attempted in the same realm while interceptor state
+ * was already populated. This usually means two copies of `@recost-dev/node`
+ * were loaded into the same process (e.g. one via `import`, one via `require`
+ * in a monorepo with dual-package layout). The first install remains active;
+ * this second install is a no-op. Fired through the first installer's
+ * `onError` callback.
+ *
+ * Recovery: deduplicate the package in the host's dependency tree.
+ */
+export class RecostInterceptorAlreadyInstalledError extends RecostError {
+  constructor() {
+    super(
+      "@recost-dev/node interceptor was installed twice in the same realm. " +
+        "This usually means two copies of the package were loaded (e.g. via " +
+        "both `import` and `require`). The first install remains active; this " +
+        "second install is a no-op.",
+    );
+    this.name = "RecostInterceptorAlreadyInstalledError";
+  }
+}
+
+/** One of the five HTTP bindings the interceptor patches. */
+export type InterceptorBinding =
+  | "fetch"
+  | "http.request"
+  | "http.get"
+  | "https.request"
+  | "https.get";
+
+/**
+ * `uninstall()` found that one or more of the bindings the interceptor patched
+ * had been wrapped by another library after `install()` ran. Restoring the
+ * original under those bindings would silently overwrite the third-party
+ * wrapper, so the interceptor leaves them alone. The interceptor callback is
+ * detached (no further events recorded) and the singleton state stays in a
+ * "skipped" mode — a subsequent `init()` becomes a no-op that fires
+ * `RecostInterceptorAlreadyInstalledError`. Process restart is the recovery.
+ */
+export class RecostInterceptorPatchOverwrittenError extends RecostError {
+  readonly skippedBindings: ReadonlyArray<InterceptorBinding>;
+  constructor(skipped: ReadonlyArray<InterceptorBinding>) {
+    super(
+      `uninstall() found ${skipped.length} binding(s) wrapped by another library after install(); ` +
+        `leaving those wrappers in place: ${skipped.join(", ")}. ` +
+        "The recost callback has been detached so no further events are recorded.",
+    );
+    this.name = "RecostInterceptorPatchOverwrittenError";
+    this.skippedBindings = skipped;
+  }
+}
