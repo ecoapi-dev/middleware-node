@@ -6,7 +6,7 @@
  */
 
 import http from "node:http";
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import {
   install,
   uninstall,
@@ -876,18 +876,19 @@ describe("http.request end-of-body latency and chunked bytes", () => {
 describe("interceptor — globalThis-keyed state (#11.1)", () => {
   const STATE_KEY = Symbol.for("@recost-dev/node:interceptor-state");
 
+  beforeAll(() => {
+    // Hermetic baseline: vitest workers can carry state across test files
+    // once any prior install() has lazily populated globalThis[STATE_KEY].
+    // Wipe it so the pre-install assertion below is meaningful.
+    delete (globalThis as Record<symbol, unknown>)[STATE_KEY];
+  });
+
   afterEach(() => {
     uninstall();
   });
 
   it("install() populates globalThis[STATE_KEY] with installed=true and saved originals", () => {
-    // The state object may already exist on globalThis from earlier tests in
-    // this file (getState() lazily creates it). What matters is that before
-    // install() the installed flag is false (or the key is absent entirely).
-    const priorState = (globalThis as Record<symbol, unknown>)[STATE_KEY] as
-      | { installed: boolean }
-      | undefined;
-    expect(priorState?.installed ?? false).toBe(false);
+    expect((globalThis as Record<symbol, unknown>)[STATE_KEY]).toBeUndefined();
 
     const events: RawEvent[] = [];
     install((e) => events.push(e));

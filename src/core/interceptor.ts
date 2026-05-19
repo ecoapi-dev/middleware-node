@@ -2,7 +2,9 @@
  * Interceptor — monkey-patches globalThis.fetch, http.request, https.request
  * (and their .get variants) to capture outbound request metadata as RawEvents.
  *
- * Singleton module. Only one set of patches can be active at a time.
+ * Singleton state lives on globalThis under a registry symbol so two copies
+ * of @recost-dev/node loaded in the same realm coordinate. Only one set of
+ * patches can be active at a time.
  * The interceptor never reads or modifies request/response bodies.
  * Every wrapper is safety-wrapped so SDK errors can never break application code.
  */
@@ -271,6 +273,9 @@ const patchedFetch: typeof globalThis.fetch = async (input, init?) => {
     return state.originalFetch(input, init);
   }
 
+  // Kick off async request-body measurement only once we know we'll record
+  // an event for this fetch. Doing this before the parsed === null guard
+  // would orphan a clone+arrayBuffer for requests we ultimately skip.
   requestBytesPromise = estimateRequestBytes(input, init);
 
   const startTime = performance.now();
@@ -279,6 +284,8 @@ const patchedFetch: typeof globalThis.fetch = async (input, init?) => {
   try {
     const response = await state.originalFetch(input, init);
 
+    // Capture immutable values up-front; the deferred telemetry emit and the
+    // streaming body counter both run long after this scope returns.
     const capturedParsed = parsed;
     const capturedMethod = method;
     const capturedRequestBytesPromise = requestBytesPromise;
@@ -301,6 +308,14 @@ const patchedFetch: typeof globalThis.fetch = async (input, init?) => {
       return response;
     }
 
+    // Streaming / non-empty body: tee the body so we can count bytes
+    // independently of the caller. The caller-facing branch is returned
+    // in a cloned Response; the counting branch is drained internally
+    // and resolves telemetry at end-of-body. This guarantees telemetry
+    // fires whether the caller reads, cancels, or abandons the body.
+    // fireTelemetry awaits the request-body measurement; this only delays
+    // the eventual `state.callback` invocation, not the caller's fetch resolution
+    // or response stream consumption.
     let observedBytes = 0;
     let telemetryFired = false;
     const fireTelemetry = async (statusForEvent: number): Promise<void> => {
@@ -354,6 +369,9 @@ const patchedFetch: typeof globalThis.fetch = async (input, init?) => {
 
     throw fetchError;
   } finally {
+    // Always reset the re-entrancy guard — a throw anywhere between
+    // the `true` assignment and here would otherwise leak it permanently
+    // and silently drop every future http.request event.
     state.inFetchWrapper = false;
   }
 };
@@ -373,7 +391,10 @@ function makeRequestWrapper(originalRequest: HttpRequestFn): HttpRequestFn {
   ): http.ClientRequest {
     const state = getState();
 
-    // Detached: pure passthrough.
+    // Detached (callback nulled by uninstall, our wrapper still chained
+    // under a third-party wrapper): forward to the captured `originalRequest`.
+    // In the multi-realm/third-party scenario `originalRequest` may itself
+    // be another library's wrapper — forwarding through it preserves the chain.
     if (state.callback === null) {
       // @ts-expect-error forwarding original overloaded signature
       return originalRequest(urlOrOptions, optionsOrCallback, maybeCallback);
@@ -446,6 +467,10 @@ function makeRequestWrapper(originalRequest: HttpRequestFn): HttpRequestFn {
           const contentLength = res.headers["content-length"];
           const headerBytes = contentLength != null ? (parseInt(contentLength, 10) || 0) : 0;
 
+          // Accumulate observed bytes for chunked / no-content-length
+          // responses. We do not consume data: IncomingMessage is a
+          // multi-listener EventEmitter, so this listener runs alongside
+          // the caller's listener with no effect on what the caller sees.
           let observedBytes = 0;
           res.on("data", (chunk: Buffer | string) => {
             try {
