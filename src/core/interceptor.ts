@@ -13,7 +13,11 @@ import http from "node:http";
 import https from "node:https";
 import { performance } from "node:perf_hooks";
 import type { RawEvent } from "./types.js";
-import { RecostInterceptorAlreadyInstalledError } from "./types.js";
+import {
+  RecostInterceptorAlreadyInstalledError,
+  RecostInterceptorPatchOverwrittenError,
+  type InterceptorBinding,
+} from "./types.js";
 import { isoNow } from "./time.js";
 
 // ---------------------------------------------------------------------------
@@ -583,22 +587,80 @@ export function install(callback: EventCallback): void {
 }
 
 /**
- * Restores all patched functions to their originals. No-op if not installed.
+ * Restores all patched functions to their originals — but only when the
+ * current global still points at *our* patched function. If another library
+ * wrapped our wrapper after install(), we cannot safely restore (doing so
+ * would overwrite the third party's wrapper). In that case the binding is
+ * left alone and recorded as skipped. Skipped bindings cause an advisory
+ * `RecostInterceptorPatchOverwrittenError` to fire through `state.onError`,
+ * and the state remains `installed === true` so subsequent `install()` calls
+ * become no-ops that fire `RecostInterceptorAlreadyInstalledError`. Recovery
+ * requires a process restart.
  *
- * (Task 3 retains blind-restore semantics; Task 5 adds the per-binding
- * identity check + typed-error signal for third-party wrappers.)
+ * No-op if not installed.
  */
 export function uninstall(): void {
   const state = getState();
   if (!state.installed) return;
 
-  if (state.originalFetch != null) globalThis.fetch = state.originalFetch;
-  if (state.originalHttpRequest != null) (http as unknown as { request: HttpRequestFn }).request = state.originalHttpRequest;
-  if (state.originalHttpGet != null) (http as unknown as { get: HttpGetFn }).get = state.originalHttpGet;
-  if (state.originalHttpsRequest != null) (https as unknown as { request: HttpRequestFn }).request = state.originalHttpsRequest;
-  if (state.originalHttpsGet != null) (https as unknown as { get: HttpGetFn }).get = state.originalHttpsGet;
+  const skipped: InterceptorBinding[] = [];
 
+  if (state.originalFetch != null && state.patchedFetch != null) {
+    if (globalThis.fetch === state.patchedFetch) {
+      globalThis.fetch = state.originalFetch;
+    } else {
+      skipped.push("fetch");
+    }
+  }
+  if (state.originalHttpRequest != null && state.patchedHttpRequest != null) {
+    if ((http as unknown as { request: HttpRequestFn }).request === state.patchedHttpRequest) {
+      (http as unknown as { request: HttpRequestFn }).request = state.originalHttpRequest;
+    } else {
+      skipped.push("http.request");
+    }
+  }
+  if (state.originalHttpGet != null && state.patchedHttpGet != null) {
+    if ((http as unknown as { get: HttpGetFn }).get === state.patchedHttpGet) {
+      (http as unknown as { get: HttpGetFn }).get = state.originalHttpGet;
+    } else {
+      skipped.push("http.get");
+    }
+  }
+  if (state.originalHttpsRequest != null && state.patchedHttpsRequest != null) {
+    if ((https as unknown as { request: HttpRequestFn }).request === state.patchedHttpsRequest) {
+      (https as unknown as { request: HttpRequestFn }).request = state.originalHttpsRequest;
+    } else {
+      skipped.push("https.request");
+    }
+  }
+  if (state.originalHttpsGet != null && state.patchedHttpsGet != null) {
+    if ((https as unknown as { get: HttpGetFn }).get === state.patchedHttpsGet) {
+      (https as unknown as { get: HttpGetFn }).get = state.originalHttpsGet;
+    } else {
+      skipped.push("https.get");
+    }
+  }
+
+  // Detach the callback so the orphaned patched functions (still in chain
+  // under any third-party wrapper) become pure passthroughs. This must
+  // happen regardless of whether any binding was skipped.
   state.callback = null;
+  state.inFetchWrapper = false;
+
+  if (skipped.length > 0) {
+    // Conflict path: leave originals + onError in state (the orphaned patched
+    // fns dereference originals via state.originalFetch when called; the same
+    // onError will receive future AlreadyInstalledError advisories until the
+    // process restarts). `state.installed` stays true.
+    try {
+      state.onError?.(new RecostInterceptorPatchOverwrittenError(skipped));
+    } catch {
+      // Swallow host onError errors
+    }
+    return;
+  }
+
+  // Clean path: lifecycle ended cleanly — clear everything.
   state.onError = null;
   state.originalFetch = null;
   state.originalHttpRequest = null;
@@ -610,7 +672,6 @@ export function uninstall(): void {
   state.patchedHttpGet = null;
   state.patchedHttpsRequest = null;
   state.patchedHttpsGet = null;
-  state.inFetchWrapper = false;
   state.installed = false;
 }
 
