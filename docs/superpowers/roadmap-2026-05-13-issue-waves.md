@@ -80,7 +80,9 @@ Both touch `WindowSummary` serialization. Coordinate Python + Node together so n
 
 ## Wave 4 — Provider registry overhaul
 
-**Status:** in-progress
+**Status:** done
+
+**Merged PR:** https://github.com/recost-dev/middleware-node/pull/38
 
 **Plan:** `plans/2026-05-15-provider-registry-overhaul.md`
 
@@ -101,7 +103,11 @@ Both touch `WindowSummary` serialization. Coordinate Python + Node together so n
 
 ## Wave 5 — Architectural / lifecycle (riskiest, save for last)
 
-**Status:** pending
+**Status:** in-progress
+
+**Spec:** `specs/2026-05-18-multi-realm-and-dispose-parity-design.md`
+
+**Plan:** `plans/2026-05-18-multi-realm-and-dispose-parity.md`
 
 **Theme:** Larger-scope changes that touch the patch model (`init.ts` install/uninstall, interceptor patching strategy) and shutdown semantics. Defer until Waves 1–4 land so the small fixes don't collide with the rewrite.
 
