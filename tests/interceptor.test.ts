@@ -979,26 +979,35 @@ describe("interceptor — dual-package state (#11.1)", () => {
 
 describe("interceptor — uninstall identity check (#11.2)", () => {
   afterEach(() => {
-    // Best-effort cleanup for conflict-uninstall tests. After a conflict-
-    // uninstall, state.installed=true and some bindings may be restored while
-    // others were skipped. Rather than trying to drive uninstall() again (which
-    // may see mismatches for bindings that were already restored and fire more
-    // errors), we directly restore globalThis.fetch from the saved original
-    // and then forcibly delete the singleton state so the next test starts clean.
+    // Best-effort cleanup: a conflict-uninstall in the test body may have
+    // left third-party wrappers on one or more bindings AND kept state in
+    // installed=true mode. Restore every binding we can identify from the
+    // saved originals on state, then nuke the singleton state entirely
+    // so the next test sees a clean slate. We don't call uninstall() here
+    // because re-running it would re-fire conflict errors for any binding
+    // still wrapped by a third party.
+    // Note: https bindings are not restored here because `https` is not
+    // imported in this file; those state fields will always be null/undefined.
     const STATE_KEY = Symbol.for("@recost-dev/node:interceptor-state");
     const s = (globalThis as Record<symbol, unknown>)[STATE_KEY] as
       | {
-          installed?: boolean;
           originalFetch?: typeof globalThis.fetch | null;
-          patchedFetch?: typeof globalThis.fetch | null;
+          originalHttpRequest?: typeof http.request | null;
+          originalHttpGet?: typeof http.get | null;
+          installed?: boolean;
         }
       | undefined;
+
     if (s?.installed) {
-      // Conflict state: restore fetch to original directly, then wipe state.
-      if (s.originalFetch != null) globalThis.fetch = s.originalFetch;
+      if (s.originalFetch) globalThis.fetch = s.originalFetch;
+      if (s.originalHttpRequest) {
+        (http as unknown as { request: typeof http.request }).request = s.originalHttpRequest;
+      }
+      if (s.originalHttpGet) {
+        (http as unknown as { get: typeof http.get }).get = s.originalHttpGet;
+      }
       delete (globalThis as Record<symbol, unknown>)[STATE_KEY];
     } else {
-      // Clean state: normal uninstall is sufficient.
       uninstall();
     }
   });
@@ -1033,12 +1042,16 @@ describe("interceptor — uninstall identity check (#11.2)", () => {
     const originalHttpRequest = http.request;
     install(() => {});
     const ourPatchedFetch = globalThis.fetch;
-    globalThis.fetch = (input, init) => ourPatchedFetch(input, init); // third-party wrap
+    const thirdPartyWrapper: typeof globalThis.fetch = (input, init) =>
+      ourPatchedFetch(input, init);
+    globalThis.fetch = thirdPartyWrapper;
 
     uninstall();
 
     // http.request was NOT wrapped by a third party, so it should be restored
     expect(http.request).toBe(originalHttpRequest);
+    // globalThis.fetch WAS wrapped, so it must be left alone
+    expect(globalThis.fetch).toBe(thirdPartyWrapper);
   });
 
   it("after a conflict-uninstall, our patched fetch (still in the chain) is a pure passthrough", async () => {
