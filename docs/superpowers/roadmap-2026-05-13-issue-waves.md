@@ -103,7 +103,9 @@ Both touch `WindowSummary` serialization. Coordinate Python + Node together so n
 
 ## Wave 5 — Architectural / lifecycle (riskiest, save for last)
 
-**Status:** in-progress
+**Status:** done
+
+**Merged PR:** https://github.com/recost-dev/middleware-node/pull/40
 
 **Spec:** `specs/2026-05-18-multi-realm-and-dispose-parity-design.md`
 
@@ -122,20 +124,24 @@ Both touch `WindowSummary` serialization. Coordinate Python + Node together so n
 
 ---
 
-## Wave 6 — Polish / one-offs (opportunistic)
+## Wave 6 — Build pipeline & CI hygiene
 
-**Status:** pending
+**Status:** in-progress
 
-**Theme:** Tiny standalone fixes; can be picked up between waves whenever convenient.
+**Plan:** `plans/2026-05-19-ci-and-build-cleanup.md`
+
+**Theme:** Get PR-validation CI in place and remove the latent build race the new CI would otherwise periodically expose. Both touch build/CI infrastructure and land in one bundled PR per the wave-execution convention.
 
 **Issues:**
 
 | # | Title | Files |
 |---|---|---|
-| [#14](https://github.com/recost-dev/middleware-node/issues/14) | `excludePatterns` substring matching contract is unscoped and untested | `src/init.ts`, `tests/init.test.ts` |
+| [#36](https://github.com/recost-dev/middleware-node/issues/36) | CI: add a workflow that runs lint + build + tests on every PR | `.github/workflows/ci.yml` |
 | [#2](https://github.com/recost-dev/middleware-node/issues/2) | Build pipeline: tsup `clean: true` races between parallel configs | `tsup.config.ts`, `package.json` |
 
-**Recommended PR shape:** one PR each, no full plan needed (each fits in a single small commit).
+**Why bundled:** CI exercises the build under matrix Node versions, so any latent build race (#2) is more likely to surface in CI than locally. Fixing both together avoids a flaky first run on `main` once the workflow is live.
+
+**Note:** the original Wave 6 candidate `#14` (excludePatterns substring matching) is deferred — it's a runtime-config polish unrelated to build/CI hygiene and will land in a later wave.
 
 ---
 

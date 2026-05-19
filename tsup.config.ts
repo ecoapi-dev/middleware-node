@@ -8,7 +8,6 @@ export default defineConfig([
     target: "es2020",
     dts: false,
     sourcemap: true,
-    clean: true,
   },
   {
     entry: ["src/index.ts"],
