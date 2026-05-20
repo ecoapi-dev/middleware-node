@@ -12,6 +12,7 @@ import type {
 import { MAX_BUCKETS } from "./aggregator.js";
 import type { TransportBackend } from "./transport-backend.js";
 import { CloudBackend } from "./transport-cloud.js";
+import { FileBackend } from "./transport-file.js";
 import { WsBackend } from "./transport-ws.js";
 
 interface ResolvedConfig {
@@ -46,15 +47,23 @@ export class Transport {
         onError: config.onError,
       });
     } else {
-      // Local mode — sub-mode selection happens in Task 5.
-      // For this refactor commit, route everything to the WS backend
-      // exactly as before. Default flip happens in Task 5.
-      this._backend = new WsBackend({
-        localPort: config.localPort ?? 9847,
-        maxWsQueueSize: config.maxWsQueueSize ?? 1000,
-        maxConsecutiveReconnectFailures: config.maxConsecutiveReconnectFailures ?? 20,
-        onError: config.onError,
-      });
+      const sub: "ws" | "file" = config.localTransport ?? "file";
+      if (sub === "ws") {
+        this._backend = new WsBackend({
+          localPort: config.localPort ?? 9847,
+          maxWsQueueSize: config.maxWsQueueSize ?? 1000,
+          maxConsecutiveReconnectFailures: config.maxConsecutiveReconnectFailures ?? 20,
+          onError: config.onError,
+        });
+      } else {
+        this._backend = new FileBackend({
+          projectId: config.projectId,
+          localDir: config.localDir,
+          maxFileBytes: config.maxFileBytes ?? 10_000_000,
+          maxLocalFileQueueSize: config.maxLocalFileQueueSize ?? 1000,
+          onError: config.onError,
+        });
+      }
     }
   }
 

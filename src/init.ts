@@ -91,10 +91,12 @@ export function init(config: RecostConfig = {}): RecostHandle {
   const excludePatterns: string[] = [...(config.excludePatterns ?? [])];
   if (config.apiKey) {
     excludePatterns.push((config.baseUrl ?? "https://api.recost.dev").replace(/\/$/, ""));
-  } else {
-    excludePatterns.push(`127.0.0.1:${config.localPort ?? 9847}`);
-    excludePatterns.push(`localhost:${config.localPort ?? 9847}`);
+  } else if ((config.localTransport ?? "file") === "ws") {
+    const port = config.localPort ?? 9847;
+    excludePatterns.push(`ws://127.0.0.1:${port}`);
+    excludePatterns.push(`ws://localhost:${port}`);
   }
+  // File mode: no exclusion — disk writes aren't HTTP.
 
   const flushAndSend = async (): Promise<void> => {
     const summary = aggregator.flush();
