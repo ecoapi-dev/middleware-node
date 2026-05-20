@@ -88,3 +88,55 @@ describe("validateConfig — projectId required with apiKey", () => {
     expect(() => validateConfig({ projectId: undefined })).not.toThrow();
   });
 });
+
+describe("validateConfig — localTransport", () => {
+  it("accepts 'ws'", () => {
+    expect(() => validateConfig({ localTransport: "ws" })).not.toThrow();
+  });
+  it("accepts 'file'", () => {
+    expect(() => validateConfig({ localTransport: "file" })).not.toThrow();
+  });
+  it("rejects an unknown value", () => {
+    expect(() =>
+      validateConfig({ localTransport: "tcp" as unknown as "ws" })
+    ).toThrow(/localTransport must be "ws" or "file"/);
+  });
+});
+
+describe("validateConfig — maxFileBytes", () => {
+  it("accepts 1024", () => {
+    expect(() => validateConfig({ maxFileBytes: 1024 })).not.toThrow();
+  });
+  it("rejects values below 1024", () => {
+    expect(() => validateConfig({ maxFileBytes: 1023 })).toThrow(
+      /maxFileBytes must be a positive integer >= 1024/,
+    );
+  });
+  it("rejects non-integers", () => {
+    expect(() => validateConfig({ maxFileBytes: 1024.5 })).toThrow(
+      /maxFileBytes must be a positive integer/,
+    );
+  });
+});
+
+describe("validateConfig — maxLocalFileQueueSize", () => {
+  it("accepts 1", () => {
+    expect(() => validateConfig({ maxLocalFileQueueSize: 1 })).not.toThrow();
+  });
+  it("rejects 0", () => {
+    expect(() => validateConfig({ maxLocalFileQueueSize: 0 })).toThrow(
+      /maxLocalFileQueueSize must be a positive integer/,
+    );
+  });
+});
+
+describe("validateConfig — localDir", () => {
+  it("accepts a non-empty string", () => {
+    expect(() => validateConfig({ localDir: "/tmp/recost" })).not.toThrow();
+  });
+  it("rejects an empty string", () => {
+    expect(() => validateConfig({ localDir: "" })).toThrow(
+      /localDir must be a non-empty string/,
+    );
+  });
+});

@@ -174,6 +174,35 @@ export interface RecostConfig {
    * requires a process restart with the VS Code extension running. Defaults to 20.
    */
   maxConsecutiveReconnectFailures?: number;
+  /**
+   * Selects which local-mode transport to use when `apiKey` is absent.
+   * - `"file"` (default): append NDJSON to disk at `${localDir}/${projectId}.jsonl`.
+   * - `"ws"`: connect to a localhost WebSocket on `localPort` (legacy; requires a custom consumer).
+   *
+   * Has no effect in cloud mode. Defaults to `"file"`.
+   */
+  localTransport?: "ws" | "file";
+  /**
+   * Directory used by the file transport. Resolved as:
+   *   1. `config.localDir` if set
+   *   2. `process.env.RECOST_LOCAL_DIR` if set
+   *   3. `path.join(os.homedir(), ".recost", "local-telemetry")` (default)
+   * The directory is created recursively at construction time.
+   */
+  localDir?: string;
+  /**
+   * Size threshold for the file transport. When the current `.jsonl` file
+   * exceeds this many bytes the SDK renames it to `.jsonl.1` (overwriting
+   * any prior backup) and opens a fresh file. Disk usage is bounded at
+   * roughly `2 × maxFileBytes`. Defaults to `10_000_000` (10 MB).
+   */
+  maxFileBytes?: number;
+  /**
+   * Maximum WindowSummary frames buffered in memory while disk writes are
+   * failing. When full, the oldest queued frame is dropped (FIFO) and
+   * `onError` is fired once per overflow episode. Defaults to 1000.
+   */
+  maxLocalFileQueueSize?: number;
   /** Called when the SDK encounters an internal error. Silently swallowed if omitted. */
   onError?: (error: Error) => void;
 }
@@ -268,6 +297,24 @@ export class RecostLocalUnreachableError extends RecostError {
     );
     this.name = "RecostLocalUnreachableError";
     this.consecutiveFailures = consecutiveFailures;
+  }
+}
+
+/**
+ * The file transport encountered a disk write failure (e.g. `EACCES`,
+ * `ENOSPC`). Fired through `onError` once per error episode; the latch
+ * resets on the next successful write. Unlike `RecostLocalUnreachableError`,
+ * this error is transient — the transport keeps trying.
+ */
+export class RecostLocalDiskError extends RecostError {
+  readonly cause?: Error;
+  constructor(cause?: Error) {
+    super(
+      `Recost file transport write failed${cause ? `: ${cause.message}` : ""}. ` +
+      `Subsequent writes will be retried; check disk space and ${"~/.recost/local-telemetry"} permissions.`,
+    );
+    this.name = "RecostLocalDiskError";
+    if (cause) this.cause = cause;
   }
 }
 

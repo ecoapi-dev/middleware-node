@@ -40,4 +40,44 @@ export function validateConfig(config: RecostConfig): void {
       );
     }
   }
+
+  if (config.localTransport !== undefined) {
+    if (config.localTransport !== "ws" && config.localTransport !== "file") {
+      throw new Error(
+        `recost: localTransport must be "ws" or "file". Got: ${JSON.stringify(config.localTransport)}.`,
+      );
+    }
+  }
+
+  if (config.maxFileBytes !== undefined) {
+    if (
+      typeof config.maxFileBytes !== "number" ||
+      !Number.isInteger(config.maxFileBytes) ||
+      config.maxFileBytes < 1024
+    ) {
+      throw new Error(
+        `recost: maxFileBytes must be a positive integer >= 1024. Got: ${JSON.stringify(config.maxFileBytes)}.`,
+      );
+    }
+  }
+
+  if (config.maxLocalFileQueueSize !== undefined) {
+    if (
+      typeof config.maxLocalFileQueueSize !== "number" ||
+      !Number.isInteger(config.maxLocalFileQueueSize) ||
+      config.maxLocalFileQueueSize < 1
+    ) {
+      throw new Error(
+        `recost: maxLocalFileQueueSize must be a positive integer. Got: ${JSON.stringify(config.maxLocalFileQueueSize)}.`,
+      );
+    }
+  }
+
+  if (config.localDir !== undefined) {
+    if (typeof config.localDir !== "string" || config.localDir === "") {
+      throw new Error(
+        `recost: localDir must be a non-empty string. Got: ${JSON.stringify(config.localDir)}.`,
+      );
+    }
+  }
 }
