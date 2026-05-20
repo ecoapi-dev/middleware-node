@@ -48,6 +48,26 @@ export interface RecostHandle {
 let _handle: RecostHandle | null = null;
 
 /**
+ * Returns true if any pattern in `patterns` matches the event.
+ *
+ * Contract:
+ * - URL match: `event.url.startsWith(pattern)` — pattern is a URL prefix.
+ * - Host match: `event.host === pattern` — pattern is an exact hostname.
+ *
+ * No substring matching. No wildcards.
+ */
+export function matchesExcludePattern(
+  event: { url: string; host: string },
+  patterns: readonly string[],
+): boolean {
+  for (const p of patterns) {
+    if (event.url.startsWith(p)) return true;
+    if (event.host === p) return true;
+  }
+  return false;
+}
+
+/**
  * Initialize the ReCost SDK.
  *
  * - Patches `globalThis.fetch`, `http.request`, and `https.request`.
@@ -93,8 +113,12 @@ export function init(config: RecostConfig = {}): RecostHandle {
     excludePatterns.push((config.baseUrl ?? "https://api.recost.dev").replace(/\/$/, ""));
   } else if ((config.localTransport ?? "file") === "ws") {
     const port = config.localPort ?? 9847;
-    excludePatterns.push(`ws://127.0.0.1:${port}`);
-    excludePatterns.push(`ws://localhost:${port}`);
+    // The WS handshake captured by the interceptor is an HTTP upgrade — its
+    // URL is `http://127.0.0.1:NNNN/...`, not `ws://...`. Use URL-prefix
+    // patterns that actually match the HTTP-shaped handshake URL under the
+    // tightened `excludePatterns` contract (startsWith || exact host).
+    excludePatterns.push(`http://127.0.0.1:${port}`);
+    excludePatterns.push(`http://localhost:${port}`);
   }
   // File mode: no exclusion — disk writes aren't HTTP.
 
@@ -122,7 +146,7 @@ export function init(config: RecostConfig = {}): RecostHandle {
 
   install((event) => {
     // Drop excluded URLs
-    if (excludePatterns.some((p) => event.url.includes(p) || event.host.includes(p))) return;
+    if (matchesExcludePattern(event, excludePatterns)) return;
 
     // Enrich with provider/endpoint from the registry
     const match = registry.match(event.url);

@@ -141,7 +141,12 @@ export interface RecostConfig {
   enabled?: boolean;
   /** Additional provider definitions merged into the built-in registry with higher priority. */
   customProviders?: ProviderDef[];
-  /** URL substrings that cause a matching request to be silently dropped. */
+  /**
+   * URL prefixes or exact hostnames that cause a matching request to be silently
+   * dropped. A pattern matches when `event.url.startsWith(pattern)` OR
+   * `event.host === pattern`. No substring or wildcard semantics — a pattern
+   * like `"api"` will NOT match `https://example.com/api/foo`.
+   */
   excludePatterns?: string[];
   /** Cloud API base URL. Defaults to "https://api.recost.dev". */
   baseUrl?: string;

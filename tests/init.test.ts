@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { WebSocketServer } from "ws";
-import { init } from "../src/init.js";
+import { init, matchesExcludePattern } from "../src/init.js";
 import { isInstalled, uninstall } from "../src/core/interceptor.js";
 import type { WindowSummary } from "../src/core/types.js";
 
@@ -230,7 +230,10 @@ describe("init — exclude patterns", () => {
     const handle = init({
       localPort: ws.port,
       flushIntervalMs: 100,
-      excludePatterns: ["/health"],
+      // URL-prefix pattern under the tightened `excludePatterns` contract
+      // (startsWith || exact host). Matches httpServer.url + "/health" but
+      // not httpServer.url + "/api/data".
+      excludePatterns: [httpServer.url + "/health"],
       localTransport: "ws",
     });
 
@@ -814,5 +817,49 @@ describe("local transport routing", () => {
       await collector.close();
     }
     expect(collector.summaries.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// excludePatterns matching contract (#14)
+// ---------------------------------------------------------------------------
+
+describe("excludePatterns matching contract (#14)", () => {
+  it("URL-prefix match: pattern excludes URLs starting with it", () => {
+    expect(matchesExcludePattern(
+      { url: "https://api.example.com/v1/foo", host: "api.example.com" },
+      ["https://api.example.com/v1"],
+    )).toBe(true);
+    expect(matchesExcludePattern(
+      { url: "https://api.example.com/v2/foo", host: "api.example.com" },
+      ["https://api.example.com/v1"],
+    )).toBe(false);
+  });
+
+  it("exact-host match: pattern excludes any URL whose host equals it", () => {
+    expect(matchesExcludePattern(
+      { url: "https://api.example.com/anything", host: "api.example.com" },
+      ["api.example.com"],
+    )).toBe(true);
+    expect(matchesExcludePattern(
+      { url: "https://api.example.com/anything", host: "api.example.com" },
+      ["example.com"],
+    )).toBe(false);
+  });
+
+  it("no substring matching: short pattern does NOT over-match", () => {
+    expect(matchesExcludePattern(
+      { url: "https://example.com/api/foo", host: "example.com" },
+      ["api"],
+    )).toBe(false);
+  });
+
+  it("internal SDK exclusions cover own WS endpoint URLs", () => {
+    // The SDK pushes ws://127.0.0.1:PORT in WS local mode; the connection
+    // attempt URL starts with that exact prefix.
+    expect(matchesExcludePattern(
+      { url: "ws://127.0.0.1:9847", host: "127.0.0.1" },
+      ["ws://127.0.0.1:9847", "ws://localhost:9847"],
+    )).toBe(true);
   });
 });
