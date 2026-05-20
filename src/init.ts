@@ -189,7 +189,7 @@ export function init(config: RecostConfig = {}): RecostHandle {
         reportFlushError(err);
       }
 
-      transport.dispose();
+      await transport.dispose();
       if (_handle === handle) _handle = null;
     },
     async flush(): Promise<void> {
