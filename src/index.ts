@@ -20,6 +20,7 @@ export {
   RecostAuthError,
   RecostFatalAuthError,
   RecostLocalUnreachableError,
+  RecostLocalDiskError,
   RecostInterceptorAlreadyInstalledError,
   RecostInterceptorPatchOverwrittenError,
 } from "./core/types.js";

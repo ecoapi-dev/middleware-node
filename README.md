@@ -328,7 +328,9 @@ console.log(BUILTIN_PROVIDERS.length); // 34 built-in rules
 - Request or response headers (contain API keys)
 - Request or response body content (may contain user data or PII) — the SDK observes byte counts via a passthrough stream but never reads chunk contents.
 
-## Core types
+## Core types and errors
+
+Type-only imports (no runtime cost):
 
 ```ts
 import type {
@@ -339,14 +341,29 @@ import type {
   ProviderDef,
   TransportMode,
   FlushStatus,
+  InterceptorBinding,
 } from "@recost-dev/node";
 ```
 
-See [src/core/types.ts](src/core/types.ts) for full type documentation.
+Runtime error classes — narrow `onError` on these via `instanceof`:
+
+```ts
+import {
+  RecostError,
+  RecostAuthError,
+  RecostFatalAuthError,
+  RecostLocalUnreachableError,
+  RecostLocalDiskError,
+  RecostInterceptorAlreadyInstalledError,
+  RecostInterceptorPatchOverwrittenError,
+} from "@recost-dev/node";
+```
+
+All error classes extend `RecostError`, which extends `Error`. See [src/core/types.ts](src/core/types.ts) for the full type documentation.
 
 ## Testing
 
-Run the full test suite (174 tests across 9 files):
+Run the full test suite (305 tests across 12 files):
 
 ```bash
 npm test
@@ -368,28 +385,35 @@ npm run lint
 
 | File | Tests | What is covered |
 |---|---|---|
-| `tests/provider-registry.test.ts` | 42 | All 34 built-in provider rules, wildcard host matching, Twilio path refinement, edge cases (empty string, explicit port, query params), custom provider priority, `BUILTIN_PROVIDERS` array ordering and pinned-count regression |
-| `tests/interceptor.test.ts` | 32 | Lifecycle (install/uninstall/isInstalled), fetch/http.request/http.get capture, query stripping, URL/Request object inputs, safety wrappers (throwing callback), `getRawFetch` bypass, double-count guard |
-| `tests/aggregator.test.ts` | 34 | Flush/reset, event grouping, p50/p95 percentile edge cases, null provider/endpoint fallbacks, window timestamps, metadata forwarding, size/bucketCount tracking |
-| `tests/transport.test.ts` | 19 | Cloud mode POST (URL path, auth header, 4xx no-retry, 5xx retry + recovery, `onError`), WebSocket mode (send, queue-and-drain, dispose closes connection), rejection signalling |
-| `tests/init.test.ts` | 23 | Interceptor install/dispose, `enabled: false`, double-init, event enrichment, unknown provider grouping, exclude patterns, auto-exclude transport URL, flush interval, early batch flush, dispose stops capture |
-| `tests/contract.test.ts` | 9 | Wire-format contract: serialized `WindowSummary` shape, field names, and types match what the cloud API expects |
-| `tests/express.test.ts` | 6 | Middleware arity, `next()` called without error, config forwarding |
-| `tests/fastify.test.ts` | 4 | `done()` called, config forwarding |
+| `tests/provider-registry.test.ts` | 50 | All 34 built-in rules, wildcard host matching, Twilio path refinement, edge cases (empty string, explicit port, query params), custom priority, specificity-based ordering, `BUILTIN_PROVIDERS` array ordering, pinned-count regression |
+| `tests/interceptor.test.ts` | 60 | Lifecycle (install/uninstall/isInstalled), fetch/http.request/http.get capture, query stripping, URL/Request object inputs, safety wrappers, `getRawFetch` bypass, double-count guard, multi-realm install detection, identity-check restore on uninstall, IPv6 host preservation |
+| `tests/aggregator.test.ts` | 38 | Flush/reset, event grouping, p50/p95 percentile edge cases, null provider/endpoint fallbacks, window timestamps, metadata forwarding, size/bucketCount tracking, soft bucket cap via `_overflow` bucket |
+| `tests/transport.test.ts` | 39 | Cloud POST (URL, auth header, 4xx no-retry, 5xx retry + recovery, `onError`); 401 lifecycle (`RecostAuthError` → `RecostFatalAuthError`, counter reset rules); WebSocket send / queue-and-drain / FIFO overflow / reconnect-failure threshold (`RecostLocalUnreachableError`); rejection signalling |
+| `tests/file-transport.test.ts` | 16 | NDJSON appends with `protocolVersion`, file mode `0o600` on POSIX, rotation at `maxFileBytes`, in-memory queue + drain on disk-write failure, `RecostLocalDiskError` once-per-episode |
+| `tests/validate-config.test.ts` | 28 | `apiKey` prefix + `"undefined"` rejection, `projectId` required in cloud mode, `localTransport` allowed values, `localDir` / `maxFileBytes` / `maxLocalFileQueueSize` bounds, empty `excludePatterns` rejection |
+| `tests/init.test.ts` | 38 | Interceptor install/dispose, `enabled: false`, double-init, event enrichment, unknown provider grouping, exclude patterns, auto-exclude transport URL, flush interval, early batch flush, `flush()` handle method, dispose-then-flush, environment forwarding |
+| `tests/contract.test.ts` | 11 | Wire-format contract: serialized `WindowSummary` shape, field names, types, `windowStart` / `windowEnd` ms-precision-with-Z timestamp format |
+| `tests/express.test.ts` | 7 | Middleware arity, `next()` called without error, config forwarding |
+| `tests/fastify.test.ts` | 6 | `done()` called, config forwarding |
 | `tests/scaffold.test.ts` | 5 | Public export smoke tests |
+| `tests/dist.test.ts` | 7 | Built `dist/` smoke — emitted files exist; CJS (`dist/cjs/index.cjs`) and ESM (`dist/esm/index.js`) load and re-export the public surface; `package.json` `main` and `types` paths resolve |
 
 ## Implementation status
 
 | Module | Status |
 |---|---|
-| `core/types.ts` | Complete |
-| `core/provider-registry.ts` | Complete — 34 built-in rules across 14 providers, wildcard host matching, custom provider priority |
-| `core/interceptor.ts` | Complete — patches fetch, http.request, https.request + .get; double-count guard; safety wrappers |
-| `core/aggregator.ts` | Complete — time-windowed bucketing, p50/p95 percentiles, cost estimation |
-| `core/transport.ts` | Complete — HTTPS POST with retry (cloud), WebSocket with reconnect (local) |
-| `init.ts` | Complete — wires all modules; exclude-patterns, early flush, debug logging |
-| `frameworks/express.ts` | Complete — thin wrapper around `init()` |
-| `frameworks/fastify.ts` | Complete — thin wrapper around `init()` |
+| `core/types.ts` | Shared interfaces (`RawEvent`, `MetricEntry`, `WindowSummary`, `RecostConfig`, `TransportBackend`, `FlushStatus`) and the `RecostError` class hierarchy |
+| `core/provider-registry.ts` | 34 built-in rules across 14 providers, wildcard host matching, specificity-based sort (custom wins on tie) |
+| `core/interceptor.ts` | Patches `fetch`, `http.request` / `.get`, `https.request` / `.get`; double-count guard; safety wrappers; multi-realm install detection; identity-check restore on uninstall |
+| `core/aggregator.ts` | Time-windowed bucketing, p50/p95 percentiles, cost aggregation, soft `maxBuckets` cap via `_overflow` bucket |
+| `core/validate-config.ts` | Synchronous pre-flight rules — `apiKey` shape, `projectId` requirement, local-transport bounds, `excludePatterns` non-empty entries |
+| `core/transport.ts` | Backend selector — picks `CloudBackend`, `WsBackend`, or `FileBackend` based on config; owns bucket-overflow chunking |
+| `core/transport-cloud.ts` | HTTPS POST with exponential-backoff retry; 401 → `RecostAuthError` → `RecostFatalAuthError` lifecycle |
+| `core/transport-ws.ts` | WebSocket to localhost with queue + drain, exponential-backoff reconnect (±25% jitter), pause after `maxConsecutiveReconnectFailures` |
+| `core/transport-file.ts` | NDJSON appends to `${localDir}/${projectId}.jsonl` (file mode `0o600` on POSIX), rotation at `maxFileBytes`, in-memory queue on write failure |
+| `init.ts` | Wires all modules; resolves transport mode; returns handle with async `dispose()` (final flush, bounded by `shutdownFlushTimeoutMs`) and `flush()` (Python `flush_blocking()` parity) |
+| `frameworks/express.ts` | Thin wrapper around `init()` |
+| `frameworks/fastify.ts` | Thin wrapper around `init()` |
 
 ## API reference
 

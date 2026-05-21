@@ -6,7 +6,7 @@ Node.js SDK that automatically tracks outbound HTTP API calls, matches them agai
 
 - **TypeScript** — strict mode, `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`
 - **tsup** — dual ESM + CJS output (`dist/esm/`, `dist/cjs/`)
-- **vitest** — unit testing (~305 tests across 12 files, +7 dist smoke)
+- **vitest** — unit testing (305 tests across 12 files, including 7 dist-surface smoke tests)
 - **Node.js ≥ 20** (vitest 4 requires `node:util.styleText`, added in Node 20)
 - **ws** — WebSocket client for local transport mode
 
@@ -30,18 +30,18 @@ src/
     express.ts            # Express middleware adapter (thin wrapper around init())
     fastify.ts            # Fastify plugin adapter (thin wrapper around init())
 tests/
-  scaffold.test.ts        # 5 smoke tests
-  provider-registry.test.ts  # 42 tests — all 34 providers, wildcards, Twilio refinement, custom priority, pinned-count regression
-  interceptor.test.ts     # 32 tests — lifecycle, capture, query stripping, safety wrappers, double-count guard
-  aggregator.test.ts      # 34 tests — flush/reset, grouping, percentiles, null provider handling
-  transport.test.ts       # 19 tests — cloud POST, WebSocket, retry logic, rejection signalling
-  file-transport.test.ts  # 15 tests — file backend semantics
-  validate-config.test.ts # synchronous pre-flight checks
-  init.test.ts            # 23 tests — integration: enrichment, exclude patterns, flush, dispose
-  contract.test.ts        # 9 tests — serialized WindowSummary wire-format contract
-  express.test.ts         # 6 tests — middleware arity, next(), config forwarding
-  fastify.test.ts         # 4 tests — done(), config forwarding
-  dist.test.ts            # 7 tests — dist smoke (ESM + CJS surface)
+  scaffold.test.ts        # 5 — public export smoke tests
+  provider-registry.test.ts  # 50 — all 34 providers, wildcards, Twilio refinement, custom priority, specificity ordering, pinned-count regression
+  interceptor.test.ts     # 60 — lifecycle, capture, query stripping, safety wrappers, double-count guard, multi-realm install, identity-check restore
+  aggregator.test.ts      # 38 — flush/reset, grouping, percentiles, null provider handling, soft bucket cap via _overflow bucket
+  transport.test.ts       # 39 — cloud POST, retry logic, 401 lifecycle (RecostAuthError → RecostFatalAuthError), WS queue+reconnect, local-unreachable threshold, rejection signalling
+  file-transport.test.ts  # 16 — NDJSON appends, rotation at maxFileBytes, queue/drain on disk-write failures
+  validate-config.test.ts # 28 — synchronous pre-flight checks (apiKey shape, projectId, localTransport, file-mode bounds, excludePatterns)
+  init.test.ts            # 38 — integration: enrichment, exclude patterns, flush, dispose+flush handle methods, transport selection, env forwarding
+  contract.test.ts        # 11 — serialized WindowSummary wire-format contract (incl. windowStart/End ms+Z format)
+  express.test.ts         # 7 — middleware arity, next(), config forwarding
+  fastify.test.ts         # 6 — done(), config forwarding
+  dist.test.ts            # 7 — dist smoke (ESM + CJS public surface, including error-class exports)
 tsup.config.ts            # Dual ESM + CJS build config
 tsconfig.json             # ES2020, bundler moduleResolution, strict
 vitest.config.ts
@@ -56,7 +56,9 @@ LICENSE
 | `npm run build` | Dual ESM + CJS build via tsup |
 | `npm run build:types` | Emit `.d.ts` declarations only |
 | `npm run dev` | Watch mode build |
-| `npm run test` | Run tests once (~305 vitest + 7 dist smoke) |
+| `npm run test` | Run `vitest run` (305 tests across 12 files), then `npm run test:dist` which builds and re-runs `tests/dist.test.ts` against a fresh `dist/` |
+| `npm run test:unit` | Same as `vitest run` — skip the dist-rebuild step |
+| `npm run test:dist` | Build, then run only `tests/dist.test.ts` (7 smoke tests against the produced ESM + CJS surface) |
 | `npm run test:watch` | Watch mode tests |
 | `npm run lint` | TypeScript type-check only (`--noEmit`) |
 
@@ -71,7 +73,9 @@ LICENSE
 - **Transport auto-excludes** its own endpoint URL from interception to prevent feedback loops
 - **Timer.unref()** used on flush interval to avoid keeping the Node.js process alive
 - **Safety wrappers** around all interception callbacks prevent SDK errors from breaking the host application
-- **init()** returns a handle with `dispose()` that stops interception, cancels timers, and closes transport
+- **init()** returns a handle with async `dispose()` (final shutdown flush, bounded by `shutdownFlushTimeoutMs`) and `flush()` (Python parity for `flush_blocking()`). Both route errors via `onError`, never reject.
+- **Interceptor is multi-realm aware** — singleton state lives on a `globalThis`-keyed object so duplicate package copies detect each other; install throws `RecostInterceptorAlreadyInstalledError`. On `uninstall()` an identity check restores the original handlers only if no third-party wrapper sits on top, otherwise fires `RecostInterceptorPatchOverwrittenError` and detaches the callback rather than clobber.
+- **Typed error hierarchy** rooted at `RecostError`. Cloud: `RecostAuthError` (per-401) → `RecostFatalAuthError` (after N 401s, suspends transport). Local: `RecostLocalUnreachableError` (WS pause after N reconnect failures), `RecostLocalDiskError` (file backend, fires once per write-failure episode).
 
 ## Provider Registry
 
