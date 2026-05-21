@@ -41,7 +41,8 @@ No API key needed. Telemetry is written to a local NDJSON file by default (see [
 ```ts
 import { init } from "@recost-dev/node";
 
-init(); // all defaults — local mode writes to ~/.recost/local-telemetry/<projectId>.jsonl
+init(); // all defaults — local mode writes to ~/.recost/local-telemetry/default.jsonl
+        // (file name is `${projectId}.jsonl`; defaults to "default" when projectId is unset)
 ```
 
 ### Cloud mode
@@ -107,12 +108,20 @@ All fields are optional.
 
 ### Validation
 
-`init()` validates the cloud-mode config synchronously and throws if it would put the SDK in a known-broken state:
+`init()` validates the config synchronously and throws if it would put the SDK in a known-broken state:
 
+**Cloud-mode rules (only checked when `apiKey` is set):**
 - `apiKey` must be a string starting with `rc-`. The literal string `"undefined"` (a common env-var misread) is rejected.
-- `projectId` is required and must be non-empty whenever `apiKey` is set.
+- `projectId` is required and must be non-empty.
 
-Local mode (no `apiKey`) imposes no validation — useful in tests and during local development. Wrap `init()` in a try/catch if a misconfigured environment should not crash your host process.
+**Rules checked in both modes (file transport applies even without `apiKey`):**
+- `localTransport`, if set, must be `"ws"` or `"file"`.
+- `localDir`, if set, must be a non-empty string.
+- `maxFileBytes`, if set, must be a positive integer ≥ 1024.
+- `maxLocalFileQueueSize`, if set, must be a positive integer.
+- `excludePatterns` entries must be non-empty strings (an empty entry would silently exclude every event).
+
+Wrap `init()` in a try/catch if a misconfigured environment should not crash your host process.
 
 ### Auth failures
 

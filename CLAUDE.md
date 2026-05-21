@@ -6,7 +6,7 @@ Node.js SDK that automatically tracks outbound HTTP API calls, matches them agai
 
 - **TypeScript** — strict mode, `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`
 - **tsup** — dual ESM + CJS output (`dist/esm/`, `dist/cjs/`)
-- **vitest** — unit testing (~291 tests across 12 files, +7 dist smoke)
+- **vitest** — unit testing (~305 tests across 12 files, +7 dist smoke)
 - **Node.js ≥ 20** (vitest 4 requires `node:util.styleText`, added in Node 20)
 - **ws** — WebSocket client for local transport mode
 
@@ -56,7 +56,7 @@ LICENSE
 | `npm run build` | Dual ESM + CJS build via tsup |
 | `npm run build:types` | Emit `.d.ts` declarations only |
 | `npm run dev` | Watch mode build |
-| `npm run test` | Run tests once (174 tests) |
+| `npm run test` | Run tests once (~305 vitest + 7 dist smoke) |
 | `npm run test:watch` | Watch mode tests |
 | `npm run lint` | TypeScript type-check only (`--noEmit`) |
 

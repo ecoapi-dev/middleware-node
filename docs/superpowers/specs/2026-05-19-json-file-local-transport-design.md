@@ -188,7 +188,7 @@ Updated to:
 
 ## Test plan
 
-Target: **~197 tests** (current 174 + ~23 net new: ~19 for #37 across `file-transport`, `init`, `validate-config`; ~4 for #14 in `init`). Exact count locked in the plan.
+Target: **~305 vitest + 7 dist smoke = ~312 total** (baseline 260 at the start of Wave 7, +~45 net new across `file-transport`, `init`, `validate-config`, `transport` covering #37 + #14 + CodeRabbit follow-ups on PR #42). Exact count locked in the plan.
 
 ### New `tests/file-transport.test.ts` (~14 tests, #37)
 
