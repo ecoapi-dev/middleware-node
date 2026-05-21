@@ -140,3 +140,35 @@ describe("validateConfig — localDir", () => {
     );
   });
 });
+
+describe("validateConfig — excludePatterns", () => {
+  it("accepts URL prefixes and exact hostnames", () => {
+    expect(() =>
+      validateConfig({ excludePatterns: ["https://api.example.com", "api.example.com"] }),
+    ).not.toThrow();
+  });
+
+  it("accepts an empty array", () => {
+    expect(() => validateConfig({ excludePatterns: [] })).not.toThrow();
+  });
+
+  // Empty string would make event.url.startsWith("") true for every event,
+  // silently dropping all telemetry. Fail fast instead.
+  it("rejects an empty-string entry", () => {
+    expect(() => validateConfig({ excludePatterns: [""] })).toThrow(
+      /excludePatterns.*non-empty/,
+    );
+  });
+
+  it("rejects a whitespace-only entry", () => {
+    expect(() => validateConfig({ excludePatterns: ["   "] })).toThrow(
+      /excludePatterns.*non-empty/,
+    );
+  });
+
+  it("rejects a non-string entry", () => {
+    expect(() =>
+      validateConfig({ excludePatterns: [123 as unknown as string] }),
+    ).toThrow(/excludePatterns.*string/);
+  });
+});

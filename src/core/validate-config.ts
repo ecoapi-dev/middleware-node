@@ -80,4 +80,23 @@ export function validateConfig(config: RecostConfig): void {
       );
     }
   }
+
+  if (config.excludePatterns !== undefined) {
+    for (let i = 0; i < config.excludePatterns.length; i++) {
+      const p = config.excludePatterns[i];
+      if (typeof p !== "string") {
+        throw new Error(
+          `recost: excludePatterns[${i}] must be a string. Got: ${JSON.stringify(p)}.`,
+        );
+      }
+      // Empty/whitespace patterns would make startsWith() match everything,
+      // silently excluding all telemetry. Fail fast.
+      if (p.trim() === "") {
+        throw new Error(
+          `recost: excludePatterns[${i}] must be a non-empty string. ` +
+            `Pass a URL prefix (e.g. "https://api.example.com/v1/private") or an exact hostname.`,
+        );
+      }
+    }
+  }
 }
