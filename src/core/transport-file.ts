@@ -42,6 +42,12 @@ export class FileBackend implements TransportBackend {
   private _queueMode = false;
   private _lastFlushStatus: FlushStatus | null = null;
   private _disposed = false;
+  /**
+   * In-flight `end()` promises for streams orphaned by a disk-error episode.
+   * dispose() awaits these so buffered writes get to flush before the
+   * backend tears down.
+   */
+  private _pendingFlushes: Promise<void>[] = [];
 
   constructor(cfg: FileConfig) {
     this._cfg = cfg;
@@ -59,28 +65,26 @@ export class FileBackend implements TransportBackend {
     const line = JSON.stringify({ ...summary, protocolVersion: "1.0" }) + "\n";
     const windowSize = summary.metrics.length;
 
-    // Once a disk error has put us in queue mode, subsequent sends queue
-    // until a successful write happens (which can only occur via a future
-    // recovery attempt — for now, dispose drains the queue best-effort).
-    if (this._queueMode) {
-      this._enqueue(line);
-      // A send completed (even if only queued) — re-arm the disk-error
-      // latch so the next error event fires another onError.
-      this._diskErrorNotified = false;
-      this._lastFlushStatus = { status: "error", windowSize, timestamp: Date.now() };
-      return;
-    }
-
+    // Always attempt a real write — even if we're in queue mode from a prior
+    // outage. `_handleDiskError` discards the broken stream when an error
+    // arrives, so `_ensureStream` will reopen the file. If the disk has
+    // recovered, the queued frames drain in chronological order ahead of the
+    // current line and queue mode clears. If the disk is still broken, the
+    // catch block re-enqueues and the latch stays held — no double onError.
     try {
       this._ensureStream();
       if (this._bytesWritten + line.length > this._cfg.maxFileBytes) {
         await this._rotate();
         this._ensureStream();
       }
+      // Drain queued frames from a prior outage BEFORE the current line so
+      // the file reflects chronological order.
+      this._drainQueue();
       this._stream!.write(line);
       this._bytesWritten += line.length;
-      this._drainQueue();
-      // Re-arm latches after a successful write.
+      // Real write succeeded — clear queue mode and re-arm error latches so
+      // a future outage gets a fresh onError notification.
+      this._queueMode = false;
       this._diskErrorNotified = false;
       this._overflowNotified = false;
       this._lastFlushStatus = { status: "ok", windowSize, timestamp: Date.now() };
@@ -94,6 +98,13 @@ export class FileBackend implements TransportBackend {
   async dispose(): Promise<void> {
     if (this._disposed) return;
     this._disposed = true;
+    // Wait for streams orphaned by prior disk-error episodes to finish
+    // flushing — without this, their buffered writes are lost when dispose
+    // returns.
+    if (this._pendingFlushes.length > 0) {
+      await Promise.all(this._pendingFlushes);
+      this._pendingFlushes = [];
+    }
     // Best-effort sync drain — swallow throws.
     for (const queued of this._queue) {
       try { fs.appendFileSync(this._filePath, queued, { mode: 0o600 }); } catch { /* swallow */ }
@@ -154,9 +165,26 @@ export class FileBackend implements TransportBackend {
   }
 
   private _handleDiskError(err: Error): void {
-    // Enter queue mode so subsequent sends accumulate in memory rather
-    // than trying to write to a stream we know is broken.
+    if (this._disposed) return;
+    // Drop the broken stream so the next send() opens a fresh one. Use end()
+    // rather than destroy() so any data already in the stream's internal
+    // buffer gets a chance to flush before the fd closes. Null the reference
+    // before calling end() so an error emitted by end() itself cannot
+    // recurse into the if-block.
     this._queueMode = true;
+    if (this._stream) {
+      const s = this._stream;
+      this._stream = null;
+      // Track the flush so dispose() can await it. Swallow errors emitted
+      // during the flush — the disk was already broken; this is best-effort.
+      this._pendingFlushes.push(
+        new Promise<void>((resolve) => {
+          s.on("error", () => { /* swallow flush-time errors */ });
+          try { s.end(() => resolve()); }
+          catch { resolve(); }
+        }),
+      );
+    }
     if (this._diskErrorNotified) return;
     this._diskErrorNotified = true;
     this._cfg.onError?.(new RecostLocalDiskError(err));

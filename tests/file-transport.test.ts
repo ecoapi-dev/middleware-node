@@ -179,49 +179,125 @@ describe("FileBackend disk errors", () => {
       onError: (e) => errors.push(e),
     });
     await backend.send(makeSummary());           // open + happy path
-    // Simulate stream error
+    // Simulate a disk error. Calling _handleDiskError directly avoids the
+    // side effect of `stream.emit("error", ...)` which would also put Node's
+    // WriteStream into an errored state and drop any buffered writes before
+    // the lazy fd open completed.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const stream = (backend as any)._stream as fs.WriteStream;
-    stream.emit("error", new Error("simulated disk error"));
-    await backend.send(makeSummary());           // would error again — silent
+    (backend as any)._handleDiskError(new Error("simulated disk error"));
+    // Next send opens a fresh stream and succeeds — no second onError fires
+    // because no second error happened.
+    await backend.send(makeSummary());
     expect(errors.filter((e) => e instanceof RecostLocalDiskError)).toHaveLength(1);
     await backend.dispose();
   });
 
-  it("re-arms the error latch on next successful write", async () => {
+  it("recovers from queue mode on next successful write — drains queue, re-arms latch", async () => {
     const errors: Error[] = [];
     const backend = new FileBackend({
       projectId: "recov", localDir: tmpDir,
       maxFileBytes: 10_000_000, maxLocalFileQueueSize: 1000,
       onError: (e) => errors.push(e),
     });
-    await backend.send(makeSummary());
+    await backend.send(makeSummary({ environment: "env_a" }));
+    // Simulate disk error via the internal handler — backend enters queue
+    // mode and discards the broken stream.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (backend as any)._stream.emit("error", new Error("err1"));
-    expect(errors).toHaveLength(1);
-    await backend.send(makeSummary());          // succeeds, drain, re-arm
+    (backend as any)._handleDiskError(new Error("transient disk error"));
+    expect(errors.filter((e) => e instanceof RecostLocalDiskError)).toHaveLength(1);
+
+    // Disk is healthy again. Next send reopens, writes through, and clears
+    // queue mode.
+    await backend.send(makeSummary({ environment: "env_b" }));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (backend as any)._stream.emit("error", new Error("err2"));
-    expect(errors).toHaveLength(2);
+    expect((backend as any)._queueMode).toBe(false);
+
+    // Trigger a second error episode — onError fires again because the latch
+    // was re-armed by a real successful write, not by a silent queue-mode
+    // no-op (the prior bug).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (backend as any)._handleDiskError(new Error("err2"));
+    expect(errors.filter((e) => e instanceof RecostLocalDiskError)).toHaveLength(2);
+
     await backend.dispose();
+
+    // Both writes reach disk. The old stream's flush and the new stream's
+    // write race against each other (both async, same path, O_APPEND), so
+    // assert as a set rather than a sequence.
+    const lines = readLines(path.join(tmpDir, "recov.jsonl")) as Array<{
+      environment: string;
+    }>;
+    expect(lines).toHaveLength(2);
+    expect(lines.map((l) => l.environment).sort()).toEqual(["env_a", "env_b"]);
+  });
+
+  it("drains queued frames in chronological order when disk recovers", async () => {
+    const errors: Error[] = [];
+    // Force the first stream creation to fail so send() catches and enqueues.
+    const realCreate = fs.createWriteStream.bind(fs);
+    let failCount = 1;
+    const spy = vi
+      .spyOn(fs, "createWriteStream")
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .mockImplementation(((p: fs.PathLike, opts: any) => {
+        if (failCount-- > 0) throw new Error("simulated open failure");
+        return realCreate(p, opts);
+      }) as typeof fs.createWriteStream);
+
+    try {
+      const backend = new FileBackend({
+        projectId: "drain", localDir: tmpDir,
+        maxFileBytes: 10_000_000, maxLocalFileQueueSize: 1000,
+        onError: (e) => errors.push(e),
+      });
+      // First send: createWriteStream throws → catch enqueues, fires disk error.
+      await backend.send(makeSummary({ environment: "env_first" }));
+      expect(errors.filter((e) => e instanceof RecostLocalDiskError)).toHaveLength(1);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((backend as any)._queue).toHaveLength(1);
+
+      // Disk recovers. Second send opens a real stream and drains the queued
+      // frame BEFORE writing the current frame.
+      await backend.send(makeSummary({ environment: "env_second" }));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((backend as any)._queueMode).toBe(false);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((backend as any)._queue).toHaveLength(0);
+
+      await backend.dispose();
+      const lines = readLines(path.join(tmpDir, "drain.jsonl")) as Array<{
+        environment: string;
+      }>;
+      expect(lines.map((l) => l.environment)).toEqual(["env_first", "env_second"]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
 describe("FileBackend queue overflow", () => {
-  it("drops oldest frame and fires onError once when queue is full", async () => {
+  it("drops oldest frame and fires onError once during a sustained outage", async () => {
     const errors: Error[] = [];
-    const backend = new FileBackend({
-      projectId: "ovf", localDir: tmpDir,
-      maxFileBytes: 10_000_000, maxLocalFileQueueSize: 2,
-      onError: (e) => errors.push(e),
-    });
-    await backend.send(makeSummary());
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (backend as any)._stream.emit("error", new Error("disk gone"));
-    // Now writes queue. Push 5 — queue cap is 2 — should drop 3.
-    for (let i = 0; i < 5; i++) await backend.send(makeSummary());
-    expect(errors.filter((e) => e.message.includes("queue overflowed"))).toHaveLength(1);
-    await backend.dispose();
+    // Sustained disk failure — createWriteStream always throws so every send
+    // hits the catch path and enqueues, exercising the overflow eviction.
+    const spy = vi
+      .spyOn(fs, "createWriteStream")
+      .mockImplementation((() => {
+        throw new Error("disk gone");
+      }) as typeof fs.createWriteStream);
+    try {
+      const backend = new FileBackend({
+        projectId: "ovf", localDir: tmpDir,
+        maxFileBytes: 10_000_000, maxLocalFileQueueSize: 2,
+        onError: (e) => errors.push(e),
+      });
+      // Push 5 — queue cap is 2 — should drop 3 and fire one overflow error.
+      for (let i = 0; i < 5; i++) await backend.send(makeSummary());
+      expect(errors.filter((e) => e.message.includes("queue overflowed"))).toHaveLength(1);
+      await backend.dispose();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
