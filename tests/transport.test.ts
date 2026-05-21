@@ -399,6 +399,23 @@ describe("Transport local mode", () => {
 
     expect(ws.connectionCount).toBe(0);
   });
+
+  it("dispose during CONNECTING tracks and closes the in-flight socket", async () => {
+    // Nothing listens on 29998 → socket stays in CONNECTING until the OS times
+    // out. With the prior bug, `_ws` was assigned only inside the "open"
+    // handler, so `dispose()` saw `_ws === null` and the socket leaked. The
+    // fix is to track the WebSocket instance from creation so `dispose()` can
+    // tear down a CONNECTING handshake.
+    const t = new Transport({ localPort: 29998, localTransport: "ws" });
+    const backend = (t as unknown as {
+      _backend: { _ws: { readyState: number } | null; _disposed: boolean };
+    })._backend;
+
+    expect(backend._ws).not.toBeNull();
+    t.dispose();
+    expect(backend._disposed).toBe(true);
+    expect(backend._ws).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

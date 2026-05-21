@@ -120,8 +120,15 @@ export class WsBackend implements TransportBackend {
       return;
     }
 
+    // Track the socket from the moment it exists, not from "open". Otherwise a
+    // dispose() called while the handshake is still in CONNECTING sees
+    // `this._ws === null` and the in-flight socket leaks until OS timeout.
+    this._ws = ws;
+
     ws.on("open", () => {
-      this._ws = ws;
+      // A racing dispose() may have already torn down this backend. Bail so
+      // we don't reset state on a disposed instance.
+      if (this._disposed) return;
       // Successful connect resets the backoff so the next disconnect retries
       // promptly instead of inheriting whatever delay the previous outage hit.
       this._reconnectAttempts = 0;
@@ -136,6 +143,10 @@ export class WsBackend implements TransportBackend {
     });
 
     ws.on("close", () => {
+      // Don't try to reconnect a backend that's been torn down. dispose()
+      // already nulled `_ws` and set `_disposed`; _scheduleReconnect already
+      // checks _disposed but the early return keeps intent local.
+      if (this._disposed) return;
       this._ws = null;
       this._scheduleReconnect();
     });
