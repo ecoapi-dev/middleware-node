@@ -236,6 +236,20 @@ export interface FlushStatus {
 }
 
 // ---------------------------------------------------------------------------
+// TransportBackend
+// ---------------------------------------------------------------------------
+
+/**
+ * Shared interface implemented by every transport backend (cloud, ws, file).
+ * `Transport` selects one at construction and delegates `send` / `dispose`.
+ */
+export interface TransportBackend {
+  send(summary: WindowSummary): Promise<void>;
+  dispose(): Promise<void>;
+  readonly lastFlushStatus: FlushStatus | null;
+}
+
+// ---------------------------------------------------------------------------
 // Error hierarchy
 // ---------------------------------------------------------------------------
 

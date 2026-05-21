@@ -6,11 +6,11 @@
 import type {
   FlushStatus,
   RecostConfig,
+  TransportBackend,
   TransportMode,
   WindowSummary,
 } from "./types.js";
 import { MAX_BUCKETS } from "./aggregator.js";
-import type { TransportBackend } from "./transport-backend.js";
 import { CloudBackend } from "./transport-cloud.js";
 import { FileBackend } from "./transport-file.js";
 import { WsBackend } from "./transport-ws.js";

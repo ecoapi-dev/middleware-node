@@ -9,9 +9,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { FlushStatus, WindowSummary } from "./types.js";
+import type { FlushStatus, TransportBackend, WindowSummary } from "./types.js";
 import { RecostLocalDiskError } from "./types.js";
-import type { TransportBackend } from "./transport-backend.js";
 
 interface FileConfig {
   projectId: string | undefined;

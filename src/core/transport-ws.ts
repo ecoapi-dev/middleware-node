@@ -6,9 +6,8 @@
  * Extracted verbatim from src/core/transport.ts; no behavior change.
  */
 import WebSocket from "ws";
-import type { FlushStatus, WindowSummary } from "./types.js";
+import type { FlushStatus, TransportBackend, WindowSummary } from "./types.js";
 import { RecostLocalUnreachableError } from "./types.js";
-import type { TransportBackend } from "./transport-backend.js";
 
 interface WsConfig {
   localPort: number;

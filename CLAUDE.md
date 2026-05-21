@@ -17,13 +17,12 @@ src/
   index.ts                # Public API surface (re-exports only)
   init.ts                 # Main entry point — wires interceptor, registry, aggregator, transport
   core/
-    types.ts                # All interfaces + error classes (RecostError, RecostAuthError, RecostFatalAuthError, RecostLocalUnreachableError, RecostLocalDiskError)
+    types.ts                # All shared interfaces + error classes (incl. TransportBackend)
     provider-registry.ts    # ProviderRegistry — 34 built-in rules
     interceptor.ts          # Patches globalThis.fetch, http.request, https.request, http.get, https.get
     aggregator.ts           # Time-windowed bucketing, percentiles, cost aggregation
     validate-config.ts      # Synchronous pre-flight checks
     transport.ts            # Thin selector — delegates to a backend
-    transport-backend.ts    # Shared TransportBackend interface
     transport-cloud.ts      # Cloud backend (HTTPS POST + 401 lifecycle)
     transport-ws.ts         # Local WebSocket backend (queue + reconnect)
     transport-file.ts       # Local file backend (NDJSON + rotation)
