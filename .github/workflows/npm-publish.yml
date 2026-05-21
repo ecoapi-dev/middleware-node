@@ -16,10 +16,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - run: npm install -g npm@latest
+      # Node 24 ships with npm 11.x, which supports OIDC Trusted Publishing
+      # (requires >= 11.5.1). Print versions for debugging if publish fails.
+      - run: node --version && npm --version
 
       - run: npm ci
 
