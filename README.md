@@ -21,7 +21,8 @@ Your app
        │
        ▼
   Transport
-    ├─ local mode  → WebSocket  → VS Code extension (port 9847)
+    ├─ local mode  → File (JSONL @ ~/.recost/local-telemetry by default)
+    │                 or WebSocket (set localTransport: "ws", port 9847)
     └─ cloud mode  → HTTPS POST → api.recost.dev
 ```
 
@@ -33,14 +34,15 @@ npm install @recost-dev/node
 
 ## Quick start
 
-### Local mode (VS Code extension)
+### Local mode
 
-No API key needed. Telemetry goes to the ReCost VS Code extension over localhost.
+No API key needed. Telemetry is written to a local NDJSON file by default (see [Local mode](#local-mode-1) for details and the optional WebSocket sub-mode).
 
 ```ts
 import { init } from "@recost-dev/node";
 
-init(); // all defaults — local mode on port 9847
+init(); // all defaults — local mode writes to ~/.recost/local-telemetry/default.jsonl
+        // (file name is `${projectId}.jsonl`; defaults to "default" when projectId is unset)
 ```
 
 ### Cloud mode
@@ -87,11 +89,15 @@ All fields are optional.
 | `flushIntervalMs` | `number` | `30000` | Milliseconds between automatic flushes. |
 | `maxBatchSize` | `number` | `100` | Early-flush threshold (number of events). |
 | `maxBuckets` | `number` | `2000` | Maximum unique `(provider, endpoint, method)` triplets per window. Crossing this triggers an early flush so the cloud API does not reject the payload with a 422. |
-| `localPort` | `number` | `9847` | WebSocket port for the VS Code extension. |
+| `localTransport` | `"file" \| "ws"` | `"file"` | Local-mode sub-mode. `"file"` writes NDJSON to disk (default); `"ws"` opens a WebSocket to a localhost consumer. |
+| `localDir` | `string` | `~/.recost/local-telemetry` | File sub-mode only — directory for `${projectId}.jsonl`. Also honors `RECOST_LOCAL_DIR`. |
+| `maxFileBytes` | `number` | `10000000` | File sub-mode only — rotate to `.jsonl.1` once the active file exceeds this many bytes. Disk usage bounded at ~2×. |
+| `maxLocalFileQueueSize` | `number` | `1000` | File sub-mode only — in-memory frames buffered when disk writes fail. FIFO overflow fires `onError` once per episode. |
+| `localPort` | `number` | `9847` | WS sub-mode only — WebSocket port for the local consumer (e.g. VS Code extension). |
 | `debug` | `boolean` | `false` | Log telemetry activity to stdout. |
 | `enabled` | `boolean` | `true` | Master kill switch. Set `false` to disable in tests. |
 | `customProviders` | `ProviderDef[]` | `[]` | Extra provider rules merged with built-ins; sorted by specificity (longer `pathPrefix` wins; on tie, custom beats built-in). |
-| `excludePatterns` | `string[]` | `[]` | URL substrings that cause a request to be silently dropped. |
+| `excludePatterns` | `string[]` | `[]` | URL prefixes or exact hostnames. Matches when `event.url.startsWith(pattern)` OR `event.host === pattern`. No substring matching. |
 | `baseUrl` | `string` | `"https://api.recost.dev"` | Override for self-hosted deployments. |
 | `maxRetries` | `number` | `3` | Retry attempts for failed cloud flushes. |
 | `maxWsQueueSize` | `number` | `1000` | Local mode only — maximum serialized `WindowSummary` payloads buffered while the VS Code extension is unreachable. When full, the oldest payload is dropped (FIFO) and `onError` fires exactly once per overflow episode. The flag resets when the queue drains to empty (extension reconnects). |
@@ -102,12 +108,20 @@ All fields are optional.
 
 ### Validation
 
-`init()` validates the cloud-mode config synchronously and throws if it would put the SDK in a known-broken state:
+`init()` validates the config synchronously and throws if it would put the SDK in a known-broken state:
 
+**Cloud-mode rules (only checked when `apiKey` is set):**
 - `apiKey` must be a string starting with `rc-`. The literal string `"undefined"` (a common env-var misread) is rejected.
-- `projectId` is required and must be non-empty whenever `apiKey` is set.
+- `projectId` is required and must be non-empty.
 
-Local mode (no `apiKey`) imposes no validation — useful in tests and during local development. Wrap `init()` in a try/catch if a misconfigured environment should not crash your host process.
+**Rules checked in both modes (file transport applies even without `apiKey`):**
+- `localTransport`, if set, must be `"ws"` or `"file"`.
+- `localDir`, if set, must be a non-empty string.
+- `maxFileBytes`, if set, must be a positive integer ≥ 1024.
+- `maxLocalFileQueueSize`, if set, must be a positive integer.
+- `excludePatterns` entries must be non-empty strings (an empty entry would silently exclude every event).
+
+Wrap `init()` in a try/catch if a misconfigured environment should not crash your host process.
 
 ### Auth failures
 
@@ -135,9 +149,32 @@ init({
 });
 ```
 
+### Local mode
+
+When `apiKey` is absent the SDK runs in local mode. By default it writes NDJSON `WindowSummary` lines to `~/.recost/local-telemetry/${projectId}.jsonl` (override the directory with `localDir` or the `RECOST_LOCAL_DIR` env var). Each line carries `protocolVersion: "1.0"`. File mode is `0o600` on POSIX.
+
+To opt back into the WebSocket transport (e.g. you run a custom local consumer):
+
+```ts
+init({ projectId: "my-proj", localTransport: "ws", localPort: 9847 });
+```
+
+### `excludePatterns`
+
+Pass URL prefixes or exact hostnames. A pattern matches when `event.url.startsWith(pattern)` OR `event.host === pattern`. Example:
+
+```ts
+init({
+  excludePatterns: [
+    "https://api.example.com/v1/internal",  // URL prefix
+    "api.metrics.local",                     // exact host
+  ],
+});
+```
+
 ### Local-mode unavailability
 
-In local mode (no `apiKey`, telemetry sent to the ReCost VS Code extension over WebSocket), the SDK reconnects on disconnect with exponential backoff (500 ms → 30 s, ±25 % jitter). If the extension is never running, the SDK would otherwise spin forever. Instead:
+**WS sub-mode (`localTransport: "ws"`):** the SDK reconnects on disconnect with exponential backoff (500 ms → 30 s, ±25 % jitter). If the consumer (e.g. VS Code extension) is never running, the SDK would otherwise spin forever. Instead:
 
 1. After `maxConsecutiveReconnectFailures` (default 20) consecutive failed reconnect attempts, the SDK pauses the local transport for the lifetime of the process.
 2. Logs a one-time warning to `stderr`: `[recost] local WebSocket unreachable after 20 consecutive reconnect attempts. Restart the process after starting the VS Code extension.`

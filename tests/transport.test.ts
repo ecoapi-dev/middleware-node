@@ -140,7 +140,7 @@ function startFakeWsServerOnPort(port: number): Promise<FakeWsServer> {
 
 describe("Transport mode detection", () => {
   it("mode is 'local' when no apiKey", () => {
-    const t = new Transport({});
+    const t = new Transport({ localTransport: "ws" });
     expect(t.mode).toBe("local");
     t.dispose();
   });
@@ -284,14 +284,14 @@ describe("Transport cloud mode", () => {
 
 describe("Transport local mode", () => {
   it("send does not throw when no WebSocket server is running", async () => {
-    const t = new Transport({ localPort: 19999 });
+    const t = new Transport({ localPort: 19999, localTransport: "ws" });
     await expect(t.send(makeSummary())).resolves.toBeUndefined();
     t.dispose();
   });
 
   it("sends summary to a running WebSocket server", async () => {
     const ws = await startFakeWsServer();
-    const t = new Transport({ localPort: ws.port });
+    const t = new Transport({ localPort: ws.port, localTransport: "ws" });
 
     // Wait for WebSocket connection to be established
     await new Promise<void>((resolve) => {
@@ -320,7 +320,7 @@ describe("Transport local mode", () => {
     const port = ws.port;
     await ws.close(); // Close immediately so port is free but no server yet
 
-    const t = new Transport({ localPort: port });
+    const t = new Transport({ localPort: port, localTransport: "ws" });
 
     // Send while no server is listening — should queue
     await t.send(makeSummary({ environment: "queued-1" }));
@@ -333,7 +333,7 @@ describe("Transport local mode", () => {
     t.dispose();
 
     // Create new transport targeting ws2
-    const t2 = new Transport({ localPort: ws2.port });
+    const t2 = new Transport({ localPort: ws2.port, localTransport: "ws" });
 
     await t2.send(makeSummary({ environment: "direct" }));
 
@@ -349,7 +349,7 @@ describe("Transport local mode", () => {
   });
 
   it("dispose can be called multiple times without error", () => {
-    const t = new Transport({});
+    const t = new Transport({ localTransport: "ws" });
     expect(() => {
       t.dispose();
       t.dispose();
@@ -358,7 +358,7 @@ describe("Transport local mode", () => {
 
   it("dispose closes the WebSocket connection", async () => {
     const ws = await startFakeWsServer();
-    const t = new Transport({ localPort: ws.port });
+    const t = new Transport({ localPort: ws.port, localTransport: "ws" });
 
     // Wait for connection
     await new Promise<void>((resolve) => {
@@ -388,7 +388,7 @@ describe("Transport local mode", () => {
   });
 
   it("dispose before connection cancels reconnect — no subsequent connection attempts", async () => {
-    const t = new Transport({ localPort: 29999 }); // nothing on this port
+    const t = new Transport({ localPort: 29999, localTransport: "ws" }); // nothing on this port
     // Dispose immediately — cancel any pending reconnect
     t.dispose();
 
@@ -398,6 +398,23 @@ describe("Transport local mode", () => {
     await ws.close();
 
     expect(ws.connectionCount).toBe(0);
+  });
+
+  it("dispose during CONNECTING tracks and closes the in-flight socket", async () => {
+    // Nothing listens on 29998 → socket stays in CONNECTING until the OS times
+    // out. With the prior bug, `_ws` was assigned only inside the "open"
+    // handler, so `dispose()` saw `_ws === null` and the socket leaked. The
+    // fix is to track the WebSocket instance from creation so `dispose()` can
+    // tear down a CONNECTING handshake.
+    const t = new Transport({ localPort: 29998, localTransport: "ws" });
+    const backend = (t as unknown as {
+      _backend: { _ws: { readyState: number } | null; _disposed: boolean };
+    })._backend;
+
+    expect(backend._ws).not.toBeNull();
+    t.dispose();
+    expect(backend._disposed).toBe(true);
+    expect(backend._ws).toBeNull();
   });
 });
 
@@ -524,7 +541,7 @@ describe("Transport — rejection signalling", () => {
 
 describe("Transport — WebSocket queue cap", () => {
   it("caps the local-mode queue at maxWsQueueSize", async () => {
-    const t = new Transport({ localPort: 39901, maxWsQueueSize: 5 });
+    const t = new Transport({ localPort: 39901, maxWsQueueSize: 5, localTransport: "ws" });
 
     for (let i = 0; i < 100; i++) {
       await t.send(makeSummary({ environment: `p-${i}` }));
@@ -535,7 +552,7 @@ describe("Transport — WebSocket queue cap", () => {
   });
 
   it("drops the oldest payloads (FIFO) when the queue is full", async () => {
-    const t = new Transport({ localPort: 39902, maxWsQueueSize: 5 });
+    const t = new Transport({ localPort: 39902, maxWsQueueSize: 5, localTransport: "ws" });
 
     for (let i = 1; i <= 7; i++) {
       await t.send(makeSummary({ environment: `p-${i}` }));
@@ -565,6 +582,7 @@ describe("Transport — WebSocket queue cap", () => {
     const t = new Transport({
       localPort: 39903,
       maxWsQueueSize: 5,
+      localTransport: "ws",
       onError: (e) => errors.push(e),
     });
 
@@ -962,6 +980,7 @@ describe("Transport — 401 auth-failure handling", () => {
       const t = new Transport({
         localPort: 49999,
         maxConsecutiveAuthFailures: 1,
+        localTransport: "ws",
         onError: (e) => errors.push(e),
       });
 
@@ -1000,6 +1019,7 @@ describe("Transport — local-mode terminal failure handling", () => {
       // so a single failure must not trip the unreachable handler.
       const t = new Transport({
         localPort: 49998,
+        localTransport: "ws",
         onError: (e) => errors.push(e),
       });
 
@@ -1035,6 +1055,7 @@ describe("Transport — local-mode terminal failure handling", () => {
       const t = new Transport({
         localPort: 49997,
         maxConsecutiveReconnectFailures: 2,
+        localTransport: "ws",
         onError: (e) => errors.push(e),
       });
 
@@ -1082,6 +1103,7 @@ describe("Transport — local-mode terminal failure handling", () => {
       const t = new Transport({
         localPort: 49996,
         maxConsecutiveReconnectFailures: 2,
+        localTransport: "ws",
         onError: (e) => errors.push(e),
       });
 
@@ -1128,6 +1150,7 @@ describe("Transport — local-mode terminal failure handling", () => {
       const t = new Transport({
         localPort: port,
         maxConsecutiveReconnectFailures: 3,
+        localTransport: "ws",
         onError: (e) => errors.push(e),
       });
 
@@ -1183,6 +1206,7 @@ describe("Transport — local-mode terminal failure handling", () => {
       const t = new Transport({
         localPort: 49994,
         maxConsecutiveReconnectFailures: 1,
+        localTransport: "ws",
         onError: (e) => errors.push(e),
       });
 
@@ -1241,6 +1265,7 @@ describe("Transport — local-mode terminal failure handling", () => {
       const t = new Transport({
         localPort: 49993,
         maxConsecutiveReconnectFailures: 1,
+        localTransport: "ws",
         onError: (e) => errors.push(e),
       });
 

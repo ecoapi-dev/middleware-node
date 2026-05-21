@@ -126,7 +126,9 @@ Both touch `WindowSummary` serialization. Coordinate Python + Node together so n
 
 ## Wave 6 — Build pipeline & CI hygiene
 
-**Status:** in-progress
+**Status:** done
+
+**Merged PR:** https://github.com/recost-dev/middleware-node/pull/41
 
 **Plan:** `plans/2026-05-19-ci-and-build-cleanup.md`
 
@@ -141,7 +143,29 @@ Both touch `WindowSummary` serialization. Coordinate Python + Node together so n
 
 **Why bundled:** CI exercises the build under matrix Node versions, so any latent build race (#2) is more likely to surface in CI than locally. Fixing both together avoids a flaky first run on `main` once the workflow is live.
 
-**Note:** the original Wave 6 candidate `#14` (excludePatterns substring matching) is deferred — it's a runtime-config polish unrelated to build/CI hygiene and will land in a later wave.
+**Note:** the original Wave 6 candidate `#14` (excludePatterns substring matching) was deferred and bundled into Wave 7 — it's a runtime-config polish unrelated to build/CI hygiene.
+
+---
+
+## Wave 7 — JSON-file local-mode transport + excludePatterns contract (final wave)
+
+**Status:** in-progress
+
+**Spec:** `specs/2026-05-19-json-file-local-transport-design.md`
+**Plan:** `plans/2026-05-19-json-file-local-transport.md`
+
+**Theme:** Replace the never-used WS default with NDJSON-to-disk; tighten the `excludePatterns` substring contract. Closes the issue-waves backlog.
+
+**Issues:**
+
+| # | Title | Files |
+|---|---|---|
+| [#37](https://github.com/recost-dev/middleware-node/issues/37) | Add JSON-file local-mode transport (alternative to WebSocket) | `src/core/transport*.ts` (new files), `src/core/types.ts`, `src/init.ts`, tests |
+| [#14](https://github.com/recost-dev/middleware-node/issues/14) | `excludePatterns` substring matching contract is unscoped and untested | `src/init.ts:90`, `tests/init.test.ts` |
+
+**Why bundled:** Only two open issues left on `middleware-node`; both touch `src/init.ts` + `tests/init.test.ts`. Same Wave 4 precedent (`#13` + `#21`).
+
+**Recommended PR shape:** one plan, one PR. Body uses `Closes #37.` + `Closes #14.` on separate lines.
 
 ---
 
@@ -149,4 +173,4 @@ Both touch `WindowSummary` serialization. Coordinate Python + Node together so n
 
 - **Cross-SDK parity scoreboard.** Several waves touch both `middleware-node` and `middleware-python`. When a Node-side change lands, file or update the corresponding Python tracking issue in the same PR description.
 - **Worktree hygiene.** Each wave's implementation work uses a fresh git worktree branched from latest `main`. Spec/plan docs land first as their own PR (or as the prefix commits of the implementation PR), then the implementation branch starts from there.
-- **Test baseline.** As of 2026-05-13 after PR #32, baseline is 228 tests (221 vitest + 7 dist-bundle). Each wave adjusts this number; the wave plan should record the new expected count.
+- **Test baseline.** As of 2026-05-19 after PRs #38, #40, #41, baseline is 267 tests (260 vitest + 7 dist-bundle). Each wave adjusts this number; the wave plan should record the new expected count.

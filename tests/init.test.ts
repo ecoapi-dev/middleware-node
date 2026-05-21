@@ -5,10 +5,13 @@
  * end-to-end: interceptor install, event enrichment, aggregation, and flush.
  */
 
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { WebSocketServer } from "ws";
-import { init } from "../src/init.js";
+import { init, matchesExcludePattern } from "../src/init.js";
 import { isInstalled, uninstall } from "../src/core/interceptor.js";
 import type { WindowSummary } from "../src/core/types.js";
 
@@ -139,6 +142,7 @@ describe("init — event capture and enrichment", () => {
     const handle = init({
       localPort: ws.port,
       flushIntervalMs: 100,
+      localTransport: "ws",
       customProviders: [
         {
           hostPattern: "127.0.0.1",
@@ -167,7 +171,7 @@ describe("init — event capture and enrichment", () => {
     const ws = await startWsCollector();
     const httpServer = await startHttpServer();
 
-    const handle = init({ localPort: ws.port, flushIntervalMs: 100 });
+    const handle = init({ localPort: ws.port, flushIntervalMs: 100, localTransport: "ws" });
 
     await fetch(httpServer.url + "/some/path").catch(() => {});
     await new Promise((r) => setTimeout(r, 400));
@@ -185,7 +189,7 @@ describe("init — event capture and enrichment", () => {
     const ws = await startWsCollector();
     const httpServer = await startHttpServer();
 
-    const handle = init({ localPort: ws.port, flushIntervalMs: 100 });
+    const handle = init({ localPort: ws.port, flushIntervalMs: 100, localTransport: "ws" });
 
     const port = parseInt(httpServer.url.split(":")[2]!, 10);
     await new Promise<void>((resolve, reject) => {
@@ -226,7 +230,11 @@ describe("init — exclude patterns", () => {
     const handle = init({
       localPort: ws.port,
       flushIntervalMs: 100,
-      excludePatterns: ["/health"],
+      // URL-prefix pattern under the tightened `excludePatterns` contract
+      // (startsWith || exact host). Matches httpServer.url + "/health" but
+      // not httpServer.url + "/api/data".
+      excludePatterns: [httpServer.url + "/health"],
+      localTransport: "ws",
     });
 
     // Excluded request
@@ -252,7 +260,7 @@ describe("init — exclude patterns", () => {
     const ws = await startWsCollector();
     const otherServer = await startHttpServer();
 
-    const handle = init({ localPort: ws.port, flushIntervalMs: 100 });
+    const handle = init({ localPort: ws.port, flushIntervalMs: 100, localTransport: "ws" });
 
     // Fetch to the WS port (should be auto-excluded)
     await fetch(`http://127.0.0.1:${ws.port}/probe`).catch(() => {});
@@ -290,7 +298,7 @@ describe("init — flush behavior", () => {
     const ws = await startWsCollector();
     const httpServer = await startHttpServer();
 
-    const handle = init({ localPort: ws.port, flushIntervalMs: 150 });
+    const handle = init({ localPort: ws.port, flushIntervalMs: 150, localTransport: "ws" });
 
     await fetch(httpServer.url + "/data").catch(() => {});
 
@@ -312,6 +320,7 @@ describe("init — flush behavior", () => {
       localPort: ws.port,
       flushIntervalMs: 60_000, // very long — won't fire during test
       maxBatchSize: 3,
+      localTransport: "ws",
     });
 
     // Fire exactly maxBatchSize requests in parallel
@@ -350,7 +359,7 @@ describe("init — dispose", () => {
     const ws = await startWsCollector();
     const httpServer = await startHttpServer();
 
-    const handle = init({ localPort: ws.port, flushIntervalMs: 100 });
+    const handle = init({ localPort: ws.port, flushIntervalMs: 100, localTransport: "ws" });
     handle.dispose();
 
     // Make requests after dispose — should NOT be captured
@@ -371,7 +380,7 @@ describe("init — dispose", () => {
 
     // Long flush interval so the periodic flush definitely won't fire during
     // the test — anything we receive must be the dispose-time shutdown flush.
-    const handle = init({ localPort: ws.port, flushIntervalMs: 60_000, maxBatchSize: 1000 });
+    const handle = init({ localPort: ws.port, flushIntervalMs: 60_000, maxBatchSize: 1000, localTransport: "ws" });
 
     await fetch(httpServer.url + "/pre-dispose").catch(() => {});
     // Give the WS connection a beat to be ready before dispose triggers the
@@ -435,7 +444,7 @@ describe("init — lastFlushStatus", () => {
     const ws = await startWsCollector();
     const httpServer = await startHttpServer();
 
-    const handle = init({ localPort: ws.port, flushIntervalMs: 100 });
+    const handle = init({ localPort: ws.port, flushIntervalMs: 100, localTransport: "ws" });
 
     await fetch(httpServer.url + "/tracked").catch(() => {});
     await new Promise((r) => setTimeout(r, 400));
@@ -471,6 +480,7 @@ describe("init — bucket overflow protection", () => {
       flushIntervalMs: 60_000,
       maxBatchSize: 10_000, // make sure batch-size flush doesn't mask overflow flush
       maxBuckets: 3,
+      localTransport: "ws",
     });
 
     // 4 distinct paths → 4 unique (provider, endpoint, method) triplets
@@ -615,6 +625,7 @@ describe("init — config forwarding", () => {
       flushIntervalMs: 100,
       projectId: "my-project",
       environment: "staging",
+      localTransport: "ws",
     });
 
     await fetch(httpServer.url + "/test").catch(() => {});
@@ -709,7 +720,7 @@ describe("init — flush (#19)", () => {
       res.writeHead(200);
       res.end("ok");
     });
-    const handle = init({ localPort: ws.port, flushIntervalMs: 60_000 });
+    const handle = init({ localPort: ws.port, flushIntervalMs: 60_000, localTransport: "ws" });
 
     try {
       // Generate one event so the aggregator window is non-empty.
@@ -744,5 +755,111 @@ describe("init — flush (#19)", () => {
     // Should resolve without throwing and without re-installing anything.
     await expect(handle.flush()).resolves.toBeUndefined();
     expect(isInstalled()).toBe(false);
+  });
+});
+
+describe("local transport routing", () => {
+  afterEach(() => {
+    uninstall();
+  });
+
+  it("defaults to file mode when localTransport is omitted", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "recost-init-"));
+    const handle = init({ projectId: "route1", localDir: tmpDir });
+    try {
+      // Trigger one captured event so the aggregator has data to flush
+      const server = await startHttpServer();
+      try {
+        await fetch(server.url);
+        // The fetch wrapper emits telemetry on the next macrotask; give it a
+        // tick. (Same pattern as the existing flush test.)
+        await new Promise<void>((r) => setTimeout(r, 50));
+        // Force flush
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (handle as any).flush?.();
+      } finally {
+        await server.close();
+      }
+    } finally {
+      await handle.dispose();
+    }
+    // .jsonl file exists in the localDir — proves file backend ran
+    expect(fs.existsSync(path.join(tmpDir, "route1.jsonl"))).toBe(true);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("routes through the WS backend when localTransport: 'ws'", async () => {
+    const collector = await startWsCollector();
+    try {
+      const handle = init({
+        projectId: "route2",
+        localTransport: "ws",
+        localPort: collector.port,
+      });
+      const server = await startHttpServer();
+      try {
+        await fetch(server.url);
+        // The fetch wrapper emits telemetry on the next macrotask; give it a
+        // tick. (Same pattern as the existing flush test.)
+        await new Promise<void>((r) => setTimeout(r, 50));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (handle as any).flush?.();
+      } finally {
+        await server.close();
+      }
+      // Wait briefly for the WS write to be delivered.
+      const deadline = Date.now() + 1_000;
+      while (collector.summaries.length === 0 && Date.now() < deadline) {
+        await new Promise<void>((r) => setTimeout(r, 25));
+      }
+      await handle.dispose();
+    } finally {
+      await collector.close();
+    }
+    expect(collector.summaries.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// excludePatterns matching contract (#14)
+// ---------------------------------------------------------------------------
+
+describe("excludePatterns matching contract (#14)", () => {
+  it("URL-prefix match: pattern excludes URLs starting with it", () => {
+    expect(matchesExcludePattern(
+      { url: "https://api.example.com/v1/foo", host: "api.example.com" },
+      ["https://api.example.com/v1"],
+    )).toBe(true);
+    expect(matchesExcludePattern(
+      { url: "https://api.example.com/v2/foo", host: "api.example.com" },
+      ["https://api.example.com/v1"],
+    )).toBe(false);
+  });
+
+  it("exact-host match: pattern excludes any URL whose host equals it", () => {
+    expect(matchesExcludePattern(
+      { url: "https://api.example.com/anything", host: "api.example.com" },
+      ["api.example.com"],
+    )).toBe(true);
+    expect(matchesExcludePattern(
+      { url: "https://api.example.com/anything", host: "api.example.com" },
+      ["example.com"],
+    )).toBe(false);
+  });
+
+  it("no substring matching: short pattern does NOT over-match", () => {
+    expect(matchesExcludePattern(
+      { url: "https://example.com/api/foo", host: "example.com" },
+      ["api"],
+    )).toBe(false);
+  });
+
+  it("internal SDK exclusions cover own WS endpoint URLs", () => {
+    // The SDK pushes ws://127.0.0.1:PORT in WS local mode; the connection
+    // attempt URL starts with that exact prefix.
+    expect(matchesExcludePattern(
+      { url: "ws://127.0.0.1:9847", host: "127.0.0.1" },
+      ["ws://127.0.0.1:9847", "ws://localhost:9847"],
+    )).toBe(true);
   });
 });
